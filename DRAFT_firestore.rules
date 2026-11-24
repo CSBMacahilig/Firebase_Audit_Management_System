@@ -1,0 +1,805 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ── Phase 3: Hardened Primitives ────────────────────────────────────────
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerified() && request.auth.token.email == 'christian.macahilig@citysavings.com.ph';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() ||
+        (isVerified() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function isOwner(userId) {
+      return isVerified() && request.auth.uid == userId;
+    }
+
+    function isActiveWorkspaceUser() {
+      return isAdmin() || (
+        isVerified() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isActive == true &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isLocked == false
+      );
+    }
+
+    function isBoundedStringList(arr, maxLen) {
+      return arr is list && arr.size() <= maxLen && (arr.size() == 0 || arr[0] is string);
+    }
+
+    function isMemberOfDoc(data) {
+      return isVerified() && (
+        data.ownerId == request.auth.uid ||
+        (data.memberUids is list && request.auth.uid in data.memberUids) ||
+        (data.memberEmails is list && request.auth.token.email is string && request.auth.token.email in data.memberEmails)
+      );
+    }
+
+    function isEngagementMember(engagementId) {
+      return isVerified() &&
+        exists(/databases/$(database)/documents/engagements/$(engagementId)) && (
+          isAdmin() ||
+          isMemberOfDoc(get(/databases/$(database)/documents/engagements/$(engagementId)).data)
+        );
+    }
+
+    // ── Phase 2/4: Validation Blueprints ────────────────────────────────────
+    function isValidAdminDoc(data) {
+      return data.keys().hasAll(['uid', 'email', 'grantedBy', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'grantedBy', 'createdAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.grantedBy is string && data.grantedBy.size() >= 1 && data.grantedBy.size() <= 160 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidUserDoc(data) {
+      return data.keys().hasAll([
+          'uid', 'username', 'fullName', 'role', 'isActive',
+          'isLocked', 'failedLoginCount', 'requiresPasswordChange',
+          'createdAt', 'modifiedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'username', 'fullName', 'role', 'isActive',
+          'isLocked', 'failedLoginCount', 'requiresPasswordChange',
+          'createdAt', 'lastLogin', 'modifiedAt'
+        ]) &&
+        isValidId(data.uid) &&
+        data.username is string && data.username.size() >= 1 && data.username.size() <= 80 &&
+        data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 160 &&
+        data.role in ['admin', 'user'] &&
+        data.isActive is bool &&
+        data.isLocked is bool &&
+        data.failedLoginCount is int && data.failedLoginCount >= 0 && data.failedLoginCount <= 100 &&
+        data.requiresPasswordChange is bool &&
+        data.createdAt is timestamp &&
+        data.modifiedAt is timestamp &&
+        (!('lastLogin' in data) || (data.lastLogin is string && data.lastLogin.size() <= 64));
+    }
+
+    function isValidUserPrivateInfo(data) {
+      return data.keys().hasAll(['uid', 'email', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSystemUser(data) {
+      return data.keys().hasAll([
+          'id', 'username', 'fullName', 'email', 'role', 'isActive',
+          'isLocked', 'failedLoginCount', 'requiresPasswordChange',
+          'ownerId', 'createdAt', 'modifiedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'username', 'fullName', 'email', 'role', 'isActive',
+          'isLocked', 'failedLoginCount', 'requiresPasswordChange',
+          'ownerId', 'createdAt', 'lastLogin', 'modifiedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.username is string && data.username.size() >= 1 && data.username.size() <= 80 &&
+        data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 160 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.role in ['admin', 'user'] &&
+        data.isActive is bool &&
+        data.isLocked is bool &&
+        data.failedLoginCount is int && data.failedLoginCount >= 0 && data.failedLoginCount <= 100 &&
+        data.requiresPasswordChange is bool &&
+        isValidId(data.ownerId) &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        data.modifiedAt is timestamp &&
+        (!('lastLogin' in data) || data.lastLogin == null || (data.lastLogin is string && data.lastLogin.size() <= 64));
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+          'id', 'name', 'roleTitle', 'fullLabel', 'headerSubtitle', 'department',
+          'canApproveHead', 'canApproveIndependent', 'canApproveCAE',
+          'ownerId', 'memberUids', 'memberEmails', 'createdAt', 'modifiedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'name', 'roleTitle', 'fullLabel', 'headerSubtitle', 'department',
+          'canApproveHead', 'canApproveIndependent', 'canApproveCAE',
+          'employeeNumber', 'lastLoginDate', 'accountModifiedAt', 'accountStatus',
+          'failedLoginCount', 'isLocked', 'requiresPasswordChange',
+          'passwordLastChanged', 'mfaEnabled', 'isPrivileged',
+          'ownerId', 'memberUids', 'memberEmails',
+          'addedBy', 'modifiedBy', 'createdAt', 'modifiedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
+        data.roleTitle is string && data.roleTitle.size() <= 160 &&
+        data.fullLabel is string && data.fullLabel.size() <= 240 &&
+        data.headerSubtitle is string && data.headerSubtitle.size() <= 160 &&
+        data.department is string && data.department.size() <= 160 &&
+        data.canApproveHead is bool &&
+        data.canApproveIndependent is bool &&
+        data.canApproveCAE is bool &&
+        isValidId(data.ownerId) &&
+        isBoundedStringList(data.memberUids, 50) &&
+        isBoundedStringList(data.memberEmails, 50) &&
+        data.createdAt is timestamp &&
+        data.modifiedAt is timestamp &&
+        (!('employeeNumber' in data) || (data.employeeNumber is string && data.employeeNumber.size() <= 64)) &&
+        (!('lastLoginDate' in data) || (data.lastLoginDate is string && data.lastLoginDate.size() <= 64)) &&
+        (!('accountModifiedAt' in data) || (data.accountModifiedAt is string && data.accountModifiedAt.size() <= 64)) &&
+        (!('accountStatus' in data) || data.accountStatus in ['Active', 'Inactive', 'Deactivated']) &&
+        (!('failedLoginCount' in data) || (data.failedLoginCount is int && data.failedLoginCount >= 0 && data.failedLoginCount <= 100)) &&
+        (!('isLocked' in data) || data.isLocked is bool) &&
+        (!('requiresPasswordChange' in data) || data.requiresPasswordChange is bool) &&
+        (!('passwordLastChanged' in data) || (data.passwordLastChanged is string && data.passwordLastChanged.size() <= 64)) &&
+        (!('mfaEnabled' in data) || data.mfaEnabled is bool) &&
+        (!('isPrivileged' in data) || data.isPrivileged is bool) &&
+        (!('addedBy' in data) || (data.addedBy is string && data.addedBy.size() <= 160)) &&
+        (!('modifiedBy' in data) || (data.modifiedBy is string && data.modifiedBy.size() <= 160));
+    }
+
+    function isValidUserProfilePrivate(data) {
+      return data.keys().hasAll(['profileId', 'email', 'ownerId', 'updatedAt']) &&
+        data.keys().hasOnly(['profileId', 'email', 'ownerId', 'updatedAt']) &&
+        isValidId(data.profileId) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        isValidId(data.ownerId) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUniverseEntity(data) {
+      return data.keys().hasAll([
+          'id', 'code', 'name', 'division', 'category', 'likelihood', 'impact',
+          'riskScore', 'riskLevel', 'lastAudited', 'nextDue', 'cycleMonths',
+          'defaultLead', 'ownerId', 'memberUids', 'memberEmails', 'createdAt', 'modifiedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'code', 'name', 'division', 'auditDivisionId', 'category',
+          'likelihood', 'impact', 'riskScore', 'riskLevel', 'lastAudited',
+          'nextDue', 'cycleMonths', 'defaultLead', 'riskNotes',
+          'ownerId', 'memberUids', 'memberEmails',
+          'addedBy', 'modifiedBy', 'createdAt', 'modifiedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.code is string && data.code.size() >= 1 && data.code.size() <= 32 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 240 &&
+        data.division is string && data.division.size() <= 160 &&
+        data.category is string && data.category.size() <= 120 &&
+        data.likelihood is number && data.likelihood >= 1 && data.likelihood <= 5 &&
+        data.impact is number && data.impact >= 1 && data.impact <= 5 &&
+        data.riskScore is number && data.riskScore >= 1 && data.riskScore <= 25 &&
+        data.riskLevel in ['High', 'Medium', 'Low'] &&
+        data.lastAudited is string && data.lastAudited.size() <= 64 &&
+        data.nextDue is string && data.nextDue.size() <= 64 &&
+        data.cycleMonths is number && data.cycleMonths >= 1 && data.cycleMonths <= 120 &&
+        data.defaultLead is string && data.defaultLead.size() <= 160 &&
+        isValidId(data.ownerId) &&
+        isBoundedStringList(data.memberUids, 50) &&
+        isBoundedStringList(data.memberEmails, 50) &&
+        data.createdAt is timestamp &&
+        data.modifiedAt is timestamp &&
+        (!('auditDivisionId' in data) || (data.auditDivisionId is string && data.auditDivisionId.size() <= 64)) &&
+        (!('riskNotes' in data) || (data.riskNotes is string && data.riskNotes.size() <= 2000)) &&
+        (!('addedBy' in data) || (data.addedBy is string && data.addedBy.size() <= 160)) &&
+        (!('modifiedBy' in data) || (data.modifiedBy is string && data.modifiedBy.size() <= 160));
+    }
+
+    function isValidEngagement(data) {
+      return data.keys().hasAll([
+          'id', 'ref', 'year', 'title', 'category', 'department', 'entityName',
+          'likelihood', 'impact', 'riskScore', 'riskLevel', 'lead',
+          'headReviewer', 'independentReviewer', 'startDate', 'endDate',
+          'durationDays', 'budgetedHours', 'status', 'readyRatio',
+          'lifecycleStage', 'fieldworkPct', 'fieldworkDayCurrent',
+          'fieldworkDayTotal', 'reportStatus', 'reportRef', 'executiveSummary',
+          'ownerId', 'memberUids', 'memberEmails', 'createdAt', 'modifiedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ref', 'year', 'title', 'category', 'department', 'auditDivisionId',
+          'entityName', 'likelihood', 'impact', 'riskScore', 'riskLevel', 'lead',
+          'headReviewer', 'independentReviewer', 'startDate', 'endDate',
+          'objectives', 'scope', 'criteria', 'addresseeName', 'addresseeTitle',
+          'copyFurnished', 'durationDays', 'budgetedHours', 'status', 'readyRatio',
+          'lifecycleStage', 'fieldworkPct', 'fieldworkDayCurrent',
+          'fieldworkDayTotal', 'reportStatus', 'reportRating', 'reportRef',
+          'executiveSummary', 'ownerId', 'memberUids', 'memberEmails',
+          'addedBy', 'modifiedBy', 'createdAt', 'modifiedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.ref is string && data.ref.size() >= 1 && data.ref.size() <= 40 &&
+        data.year is int && data.year >= 2000 && data.year <= 2100 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 240 &&
+        data.category is string && data.category.size() <= 120 &&
+        data.department is string && data.department.size() <= 160 &&
+        data.entityName is string && data.entityName.size() <= 240 &&
+        data.likelihood is number && data.likelihood >= 1 && data.likelihood <= 5 &&
+        data.impact is number && data.impact >= 1 && data.impact <= 5 &&
+        data.riskScore is number && data.riskScore >= 1 && data.riskScore <= 25 &&
+        data.riskLevel in ['High', 'Medium', 'Low'] &&
+        data.lead is string && data.lead.size() <= 160 &&
+        data.headReviewer is string && data.headReviewer.size() <= 160 &&
+        data.independentReviewer is string && data.independentReviewer.size() <= 160 &&
+        data.startDate is string && data.startDate.size() <= 40 &&
+        data.endDate is string && data.endDate.size() <= 40 &&
+        data.durationDays is number && data.durationDays >= 0 && data.durationDays <= 3650 &&
+        data.budgetedHours is number && data.budgetedHours >= 0 && data.budgetedHours <= 50000 &&
+        data.status is string && data.status.size() >= 1 && data.status.size() <= 64 &&
+        data.readyRatio is string && data.readyRatio.size() <= 32 &&
+        data.lifecycleStage is int && data.lifecycleStage >= 1 && data.lifecycleStage <= 7 &&
+        data.fieldworkPct is number && data.fieldworkPct >= 0 && data.fieldworkPct <= 100 &&
+        data.fieldworkDayCurrent is number && data.fieldworkDayCurrent >= 0 &&
+        data.fieldworkDayTotal is number && data.fieldworkDayTotal >= 0 &&
+        data.reportStatus in ['Draft', 'Submitted to Lead', 'Approved by Lead', 'Approved by CAE'] &&
+        data.reportRef is string && data.reportRef.size() <= 64 &&
+        data.executiveSummary is string && data.executiveSummary.size() <= 8000 &&
+        isValidId(data.ownerId) &&
+        isBoundedStringList(data.memberUids, 50) &&
+        isBoundedStringList(data.memberEmails, 50) &&
+        data.createdAt is timestamp &&
+        data.modifiedAt is timestamp &&
+        (!('auditDivisionId' in data) || (data.auditDivisionId is string && data.auditDivisionId.size() <= 64)) &&
+        (!('objectives' in data) || (data.objectives is string && data.objectives.size() <= 4000)) &&
+        (!('scope' in data) || (data.scope is string && data.scope.size() <= 4000)) &&
+        (!('criteria' in data) || (data.criteria is string && data.criteria.size() <= 4000)) &&
+        (!('addresseeName' in data) || (data.addresseeName is string && data.addresseeName.size() <= 160)) &&
+        (!('addresseeTitle' in data) || (data.addresseeTitle is string && data.addresseeTitle.size() <= 160)) &&
+        (!('copyFurnished' in data) || (data.copyFurnished is string && data.copyFurnished.size() <= 500)) &&
+        (!('reportRating' in data) || (data.reportRating is string && data.reportRating.size() <= 64)) &&
+        (!('addedBy' in data) || (data.addedBy is string && data.addedBy.size() <= 160)) &&
+        (!('modifiedBy' in data) || (data.modifiedBy is string && data.modifiedBy.size() <= 160));
+    }
+
+    function isValidWorkingNote(data) {
+      return data.keys().hasAll([
+          'id', 'engagementId', 'ref', 'title', 'controlArea', 'author',
+          'status', 'hasException', 'updatedAt', 'testingProcedure', 'conclusion',
+          'ownerId', 'memberUids', 'memberEmails', 'createdAt', 'modifiedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'engagementId', 'ref', 'title', 'controlArea', 'author',
+          'status', 'hasException', 'updatedAt', 'testingProcedure',
+          'observations', 'conclusion', 'reviewerComments',
+          'ownerId', 'memberUids', 'memberEmails',
+          'addedBy', 'modifiedBy', 'createdAt', 'modifiedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.engagementId) &&
+        data.ref is string && data.ref.size() <= 40 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 240 &&
+        data.controlArea is string && data.controlArea.size() <= 160 &&
+        data.author is string && data.author.size() <= 160 &&
+        data.status in ['Cleared', 'For head review', 'For independent review', 'Draft', 'Returned'] &&
+        data.hasException is bool &&
+        data.updatedAt is string && data.updatedAt.size() <= 64 &&
+        data.testingProcedure is string && data.testingProcedure.size() <= 4000 &&
+        data.conclusion is string && data.conclusion.size() <= 4000 &&
+        isValidId(data.ownerId) &&
+        isBoundedStringList(data.memberUids, 50) &&
+        isBoundedStringList(data.memberEmails, 50) &&
+        data.createdAt is timestamp &&
+        data.modifiedAt is timestamp &&
+        (!('observations' in data) || (data.observations is string && data.observations.size() <= 4000)) &&
+        (!('reviewerComments' in data) || (data.reviewerComments is string && data.reviewerComments.size() <= 2000)) &&
+        (!('addedBy' in data) || (data.addedBy is string && data.addedBy.size() <= 160)) &&
+        (!('modifiedBy' in data) || (data.modifiedBy is string && data.modifiedBy.size() <= 160));
+    }
+
+    function isValidFinding(data) {
+      return data.keys().hasAll([
+          'id', 'engagementId', 'ref', 'title', 'severity', 'condition',
+          'criteria', 'cause', 'effect', 'recommendation', 'owner',
+          'targetDate', 'status', 'linkedNoteRef',
+          'ownerId', 'memberUids', 'memberEmails', 'createdAt', 'modifiedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'engagementId', 'ref', 'title', 'severity', 'category',
+          'condition', 'criteria', 'cause', 'effect', 'recommendation',
+          'owner', 'targetDate', 'status', 'linkedNoteRef',
+          'ownerId', 'memberUids', 'memberEmails',
+          'addedBy', 'modifiedBy', 'createdAt', 'modifiedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.engagementId) &&
+        data.ref is string && data.ref.size() <= 40 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 240 &&
+        data.severity is string && data.severity.size() <= 40 &&
+        data.condition is string && data.condition.size() <= 4000 &&
+        data.criteria is string && data.criteria.size() <= 4000 &&
+        data.cause is string && data.cause.size() <= 4000 &&
+        data.effect is string && data.effect.size() <= 4000 &&
+        data.recommendation is string && data.recommendation.size() <= 4000 &&
+        data.owner is string && data.owner.size() <= 160 &&
+        data.targetDate is string && data.targetDate.size() <= 64 &&
+        data.status in ['Open', 'Action plan submitted', 'In remediation', 'Validated & Closed'] &&
+        data.linkedNoteRef is string && data.linkedNoteRef.size() <= 40 &&
+        isValidId(data.ownerId) &&
+        isBoundedStringList(data.memberUids, 50) &&
+        isBoundedStringList(data.memberEmails, 50) &&
+        data.createdAt is timestamp &&
+        data.modifiedAt is timestamp &&
+        (!('category' in data) || (data.category is string && data.category.size() <= 120)) &&
+        (!('addedBy' in data) || (data.addedBy is string && data.addedBy.size() <= 160)) &&
+        (!('modifiedBy' in data) || (data.modifiedBy is string && data.modifiedBy.size() <= 160));
+    }
+
+    function isValidTimelineActivity(data) {
+      return data.keys().hasAll([
+          'id', 'engagementId', 'name', 'roleResponsible', 'dueDate', 'status',
+          'stageId', 'ownerId', 'memberUids', 'memberEmails', 'createdAt', 'modifiedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'engagementId', 'name', 'roleResponsible', 'dueDate',
+          'completedDate', 'status', 'stageId',
+          'ownerId', 'memberUids', 'memberEmails', 'createdAt', 'modifiedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.engagementId) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 240 &&
+        data.roleResponsible is string && data.roleResponsible.size() <= 160 &&
+        data.dueDate is string && data.dueDate.size() <= 64 &&
+        data.status in ['Completed', 'Past due', 'Pending'] &&
+        data.stageId is int && data.stageId >= 1 && data.stageId <= 7 &&
+        isValidId(data.ownerId) &&
+        isBoundedStringList(data.memberUids, 50) &&
+        isBoundedStringList(data.memberEmails, 50) &&
+        data.createdAt is timestamp &&
+        data.modifiedAt is timestamp &&
+        (!('completedDate' in data) || (data.completedDate is string && data.completedDate.size() <= 64));
+    }
+
+    function isValidAuditFile(data) {
+      return data.keys().hasAll([
+          'id', 'engagementId', 'name', 'folder', 'size', 'uploadedBy',
+          'uploadedAt', 'ownerId', 'memberUids', 'memberEmails', 'createdAt', 'modifiedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'engagementId', 'name', 'folder', 'size', 'uploadedBy',
+          'uploadedAt', 'ownerId', 'memberUids', 'memberEmails', 'createdAt', 'modifiedAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.engagementId) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        data.folder is string && data.folder.size() <= 120 &&
+        data.size is string && data.size.size() <= 40 &&
+        data.uploadedBy is string && data.uploadedBy.size() <= 160 &&
+        data.uploadedAt is string && data.uploadedAt.size() <= 64 &&
+        isValidId(data.ownerId) &&
+        isBoundedStringList(data.memberUids, 50) &&
+        isBoundedStringList(data.memberEmails, 50) &&
+        data.createdAt is timestamp &&
+        data.modifiedAt is timestamp;
+    }
+
+    function isValidActivityLog(data) {
+      return data.keys().hasAll([
+          'id', 'engagementId', 'timestamp', 'actor', 'action',
+          'ownerId', 'memberUids', 'memberEmails', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'engagementId', 'timestamp', 'actor', 'action', 'detail',
+          'ownerId', 'memberUids', 'memberEmails', 'createdAt'
+        ]) &&
+        isValidId(data.id) &&
+        isValidId(data.engagementId) &&
+        data.timestamp is string && data.timestamp.size() <= 64 &&
+        data.actor is string && data.actor.size() <= 160 &&
+        data.action is string && data.action.size() >= 1 && data.action.size() <= 400 &&
+        isValidId(data.ownerId) &&
+        isBoundedStringList(data.memberUids, 50) &&
+        isBoundedStringList(data.memberEmails, 50) &&
+        data.createdAt is timestamp &&
+        (!('detail' in data) || (data.detail is string && data.detail.size() <= 1000));
+    }
+
+    function isValidIssue(data) {
+      return data.keys().hasAll([
+          'id', 'ref', 'title', 'auditRef', 'auditTitle', 'severity', 'owner',
+          'ownerUnit', 'originalDue', 'currentDue', 'extensionCount', 'daysStatus',
+          'isOverdue', 'isDueSoon', 'status', 'actionPlanSummary',
+          'ownerId', 'memberUids', 'memberEmails', 'createdAt', 'modifiedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ref', 'title', 'auditRef', 'auditTitle', 'severity', 'owner',
+          'ownerUnit', 'originalDue', 'currentDue', 'extensionCount', 'daysStatus',
+          'isOverdue', 'isDueSoon', 'status', 'actionPlanSummary', 'evidenceNote',
+          'extensionReason', 'ownerId', 'memberUids', 'memberEmails',
+          'addedBy', 'modifiedBy', 'createdAt', 'modifiedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.ref is string && data.ref.size() >= 1 && data.ref.size() <= 40 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 240 &&
+        data.auditRef is string && data.auditRef.size() <= 40 &&
+        data.auditTitle is string && data.auditTitle.size() <= 240 &&
+        data.severity is string && data.severity.size() <= 40 &&
+        data.owner is string && data.owner.size() <= 160 &&
+        data.ownerUnit is string && data.ownerUnit.size() <= 160 &&
+        data.originalDue is string && data.originalDue.size() <= 64 &&
+        data.currentDue is string && data.currentDue.size() <= 64 &&
+        data.extensionCount is int && data.extensionCount >= 0 && data.extensionCount <= 50 &&
+        data.daysStatus is string && data.daysStatus.size() <= 64 &&
+        data.isOverdue is bool &&
+        data.isDueSoon is bool &&
+        data.status in ['Overdue', 'In progress', 'Open', 'Extension requested', 'For validation', 'Closed'] &&
+        data.actionPlanSummary is string && data.actionPlanSummary.size() <= 4000 &&
+        isValidId(data.ownerId) &&
+        isBoundedStringList(data.memberUids, 50) &&
+        isBoundedStringList(data.memberEmails, 50) &&
+        data.createdAt is timestamp &&
+        data.modifiedAt is timestamp &&
+        (!('evidenceNote' in data) || (data.evidenceNote is string && data.evidenceNote.size() <= 2000)) &&
+        (!('extensionReason' in data) || (data.extensionReason is string && data.extensionReason.size() <= 2000)) &&
+        (!('addedBy' in data) || (data.addedBy is string && data.addedBy.size() <= 160)) &&
+        (!('modifiedBy' in data) || (data.modifiedBy is string && data.modifiedBy.size() <= 160));
+    }
+
+    function isValidMasterData(data) {
+      return data.keys().hasAll(['id', 'data', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'data', 'addedBy', 'modifiedBy', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.data is map &&
+        data.data.keys().size() <= 500 &&
+        data.updatedAt is timestamp &&
+        (!('addedBy' in data) || (data.addedBy is string && data.addedBy.size() <= 160)) &&
+        (!('modifiedBy' in data) || (data.modifiedBy is string && data.modifiedBy.size() <= 160));
+    }
+
+    function isValidAuditFrequency(data) {
+      return data.keys().hasAll(['id', 'high', 'medium', 'low', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'high', 'medium', 'low', 'addedBy', 'modifiedBy', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.high is int && data.high >= 1 && data.high <= 120 &&
+        data.medium is int && data.medium >= 1 && data.medium <= 120 &&
+        data.low is int && data.low >= 1 && data.low <= 120 &&
+        data.updatedAt is timestamp &&
+        (!('addedBy' in data) || (data.addedBy is string && data.addedBy.size() <= 160)) &&
+        (!('modifiedBy' in data) || (data.modifiedBy is string && data.modifiedBy.size() <= 160));
+    }
+
+    // ── Collection Rules ────────────────────────────────────────────────────
+
+    match /admins/{userId} {
+      allow get: if isVerified() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow create, update: if isAdmin() && isValidId(userId) && isValidAdminDoc(incoming()) &&
+        incoming().uid == userId && incoming().createdAt == request.time;
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    match /users/{userId} {
+      allow get: if isVerified() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isVerified() && (isBootstrappedAdmin() || existing().uid == request.auth.uid);
+      allow create: if isVerified() && isValidId(userId) && isValidUserDoc(incoming()) &&
+        incoming().uid == userId &&
+        incoming().createdAt == request.time &&
+        incoming().modifiedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/users/$(userId)/private/info) &&
+        ((isOwner(userId) && incoming().role == 'user' && incoming().isActive == true && incoming().isLocked == false) || isAdmin());
+      allow update: if isVerified() && isValidId(userId) && isValidUserDoc(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().modifiedAt == request.time &&
+        (
+          isAdmin() ||
+          (isOwner(userId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['username', 'fullName', 'lastLogin', 'modifiedAt']) &&
+            incoming().role == existing().role &&
+            incoming().isActive == existing().isActive &&
+            incoming().isLocked == existing().isLocked)
+        );
+      allow delete: if isAdmin() && isValidId(userId);
+
+      match /private/{docId} {
+        allow get: if isVerified() && isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
+        allow create, update: if isVerified() && isValidId(userId) && docId == 'info' &&
+          isValidUserPrivateInfo(incoming()) &&
+          incoming().uid == userId &&
+          incoming().updatedAt == request.time &&
+          existsAfter(/databases/$(database)/documents/users/$(userId)) &&
+          (isOwner(userId) || isAdmin());
+        allow delete: if isAdmin() && isValidId(userId) && isValidId(docId);
+      }
+    }
+
+    match /system_users/{userId} {
+      allow get: if isVerified() && isValidId(userId) && (isAdmin() || existing().email == request.auth.token.email);
+      allow list: if isVerified() && (isBootstrappedAdmin() || existing().email == request.auth.token.email);
+      allow create: if isAdmin() && isValidId(userId) && isValidSystemUser(incoming()) &&
+        incoming().id == userId &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().modifiedAt == request.time;
+      allow update: if isAdmin() && isValidId(userId) && isValidSystemUser(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().modifiedAt == request.time;
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    match /user_profiles/{profileId} {
+      allow get: if isVerified() && isValidId(profileId) && (isAdmin() || isMemberOfDoc(existing()));
+      allow list: if isVerified() && (isBootstrappedAdmin() || isMemberOfDoc(existing()));
+      allow create: if isAdmin() && isValidId(profileId) && isValidUserProfile(incoming()) &&
+        incoming().id == profileId &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().modifiedAt == request.time;
+      allow update: if isAdmin() && isValidId(profileId) && isValidUserProfile(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().modifiedAt == request.time;
+      allow delete: if isAdmin() && isValidId(profileId);
+
+      match /private/{docId} {
+        allow get: if isVerified() && isValidId(profileId) && isValidId(docId) &&
+          (isAdmin() || existing().email == request.auth.token.email);
+        allow create, update: if isAdmin() && isValidId(profileId) && docId == 'contact' &&
+          isValidUserProfilePrivate(incoming()) &&
+          incoming().profileId == profileId &&
+          incoming().ownerId == request.auth.uid &&
+          incoming().updatedAt == request.time &&
+          existsAfter(/databases/$(database)/documents/user_profiles/$(profileId));
+        allow delete: if isAdmin() && isValidId(profileId) && isValidId(docId);
+      }
+    }
+
+    match /universe_entities/{entityId} {
+      allow get: if isVerified() && isValidId(entityId) && (isAdmin() || isMemberOfDoc(existing()));
+      allow list: if isVerified() && (isBootstrappedAdmin() || isMemberOfDoc(existing()));
+      allow create: if isVerified() && isValidId(entityId) && isValidUniverseEntity(incoming()) &&
+        incoming().id == entityId &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().modifiedAt == request.time &&
+        isActiveWorkspaceUser();
+      allow update: if isVerified() && isValidId(entityId) && isValidUniverseEntity(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().modifiedAt == request.time && (
+          isAdmin() ||
+          (isMemberOfDoc(existing()) && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'division', 'auditDivisionId', 'category', 'likelihood', 'impact',
+            'riskScore', 'riskLevel', 'lastAudited', 'nextDue', 'cycleMonths',
+            'defaultLead', 'riskNotes', 'modifiedBy', 'modifiedAt'
+          ]))
+        );
+      allow delete: if isAdmin() && isValidId(entityId);
+    }
+
+    match /engagements/{engagementId} {
+      allow get: if isVerified() && isValidId(engagementId) && (isAdmin() || isMemberOfDoc(existing()));
+      allow list: if isVerified() && (isBootstrappedAdmin() || isMemberOfDoc(existing()));
+      allow create: if isVerified() && isValidId(engagementId) && isValidEngagement(incoming()) &&
+        incoming().id == engagementId &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().modifiedAt == request.time &&
+        isActiveWorkspaceUser();
+      allow update: if isVerified() && isValidId(engagementId) && isValidEngagement(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().modifiedAt == request.time && (
+          isAdmin() ||
+          (existing().status != 'Closed' && isMemberOfDoc(existing()) && (
+            // Action: Fieldwork & progress updates
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'lifecycleStage', 'status', 'fieldworkPct', 'fieldworkDayCurrent',
+              'fieldworkDayTotal', 'readyRatio', 'modifiedBy', 'modifiedAt'
+            ]) ||
+            // Action: Report drafting & approval
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'reportStatus', 'reportRating', 'executiveSummary', 'modifiedBy', 'modifiedAt'
+            ]) ||
+            // Action: Plan & scope edits
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'category', 'department', 'auditDivisionId', 'entityName',
+              'likelihood', 'impact', 'riskScore', 'riskLevel', 'lead',
+              'headReviewer', 'independentReviewer', 'startDate', 'endDate',
+              'objectives', 'scope', 'criteria', 'addresseeName', 'addresseeTitle',
+              'copyFurnished', 'durationDays', 'budgetedHours', 'modifiedBy', 'modifiedAt'
+            ])
+          ))
+        );
+      allow delete: if isAdmin() && isValidId(engagementId);
+
+      match /working_notes/{noteId} {
+        allow get: if isVerified() && isValidId(engagementId) && isValidId(noteId) && isEngagementMember(engagementId);
+        allow list: if isVerified() && (isBootstrappedAdmin() || isMemberOfDoc(existing()));
+        allow create: if isVerified() && isValidId(engagementId) && isValidId(noteId) &&
+          isValidWorkingNote(incoming()) &&
+          incoming().id == noteId &&
+          incoming().engagementId == engagementId &&
+          incoming().ownerId == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          incoming().modifiedAt == request.time &&
+          isEngagementMember(engagementId);
+        allow update: if isVerified() && isValidId(engagementId) && isValidId(noteId) &&
+          isValidWorkingNote(incoming()) &&
+          incoming().id == existing().id &&
+          incoming().engagementId == existing().engagementId &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().modifiedAt == request.time &&
+          isEngagementMember(engagementId) && (
+            isAdmin() ||
+            (existing().status != 'Cleared' && incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'controlArea', 'status', 'hasException', 'updatedAt',
+              'testingProcedure', 'observations', 'conclusion', 'reviewerComments',
+              'modifiedBy', 'modifiedAt'
+            ]))
+          );
+        allow delete: if isAdmin() && isValidId(engagementId) && isValidId(noteId);
+      }
+
+      match /findings/{findingId} {
+        allow get: if isVerified() && isValidId(engagementId) && isValidId(findingId) && isEngagementMember(engagementId);
+        allow list: if isVerified() && (isBootstrappedAdmin() || isMemberOfDoc(existing()));
+        allow create: if isVerified() && isValidId(engagementId) && isValidId(findingId) &&
+          isValidFinding(incoming()) &&
+          incoming().id == findingId &&
+          incoming().engagementId == engagementId &&
+          incoming().ownerId == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          incoming().modifiedAt == request.time &&
+          isEngagementMember(engagementId);
+        allow update: if isVerified() && isValidId(engagementId) && isValidId(findingId) &&
+          isValidFinding(incoming()) &&
+          incoming().id == existing().id &&
+          incoming().engagementId == existing().engagementId &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().modifiedAt == request.time &&
+          isEngagementMember(engagementId) && (
+            isAdmin() ||
+            (existing().status != 'Validated & Closed' && incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'severity', 'category', 'condition', 'criteria', 'cause',
+              'effect', 'recommendation', 'owner', 'targetDate', 'status',
+              'modifiedBy', 'modifiedAt'
+            ]))
+          );
+        allow delete: if isAdmin() && isValidId(engagementId) && isValidId(findingId);
+      }
+
+      match /timeline_activities/{activityId} {
+        allow get: if isVerified() && isValidId(engagementId) && isValidId(activityId) && isEngagementMember(engagementId);
+        allow list: if isVerified() && (isBootstrappedAdmin() || isMemberOfDoc(existing()));
+        allow create: if isVerified() && isValidId(engagementId) && isValidId(activityId) &&
+          isValidTimelineActivity(incoming()) &&
+          incoming().id == activityId &&
+          incoming().engagementId == engagementId &&
+          incoming().ownerId == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          incoming().modifiedAt == request.time &&
+          isEngagementMember(engagementId);
+        allow update: if isVerified() && isValidId(engagementId) && isValidId(activityId) &&
+          isValidTimelineActivity(incoming()) &&
+          incoming().id == existing().id &&
+          incoming().engagementId == existing().engagementId &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().modifiedAt == request.time &&
+          isEngagementMember(engagementId) && (
+            isAdmin() ||
+            (existing().status != 'Completed' && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'completedDate', 'dueDate', 'modifiedAt'
+            ]))
+          );
+        allow delete: if isAdmin() && isValidId(engagementId) && isValidId(activityId);
+      }
+
+      match /files/{fileId} {
+        allow get: if isVerified() && isValidId(engagementId) && isValidId(fileId) && isEngagementMember(engagementId);
+        allow list: if isVerified() && (isBootstrappedAdmin() || isMemberOfDoc(existing()));
+        allow create: if isVerified() && isValidId(engagementId) && isValidId(fileId) &&
+          isValidAuditFile(incoming()) &&
+          incoming().id == fileId &&
+          incoming().engagementId == engagementId &&
+          incoming().ownerId == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          incoming().modifiedAt == request.time &&
+          isEngagementMember(engagementId);
+        allow update: if false;
+        allow delete: if isAdmin() && isValidId(engagementId) && isValidId(fileId);
+      }
+
+      match /activity_log/{logId} {
+        allow get: if isVerified() && isValidId(engagementId) && isValidId(logId) && isEngagementMember(engagementId);
+        allow list: if isVerified() && (isBootstrappedAdmin() || isMemberOfDoc(existing()));
+        allow create: if isVerified() && isValidId(engagementId) && isValidId(logId) &&
+          isValidActivityLog(incoming()) &&
+          incoming().id == logId &&
+          incoming().engagementId == engagementId &&
+          incoming().ownerId == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          isEngagementMember(engagementId);
+        allow update: if false;
+        allow delete: if isAdmin() && isValidId(engagementId) && isValidId(logId);
+      }
+    }
+
+    match /issues_register/{issueId} {
+      allow get: if isVerified() && isValidId(issueId) && (isAdmin() || isMemberOfDoc(existing()));
+      allow list: if isVerified() && (isBootstrappedAdmin() || isMemberOfDoc(existing()));
+      allow create: if isVerified() && isValidId(issueId) && isValidIssue(incoming()) &&
+        incoming().id == issueId &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().modifiedAt == request.time &&
+        isActiveWorkspaceUser();
+      allow update: if isVerified() && isValidId(issueId) && isValidIssue(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().modifiedAt == request.time && (
+          isAdmin() ||
+          (existing().status != 'Closed' && isMemberOfDoc(existing()) && incoming().diff(existing()).affectedKeys().hasOnly([
+            'currentDue', 'extensionCount', 'daysStatus', 'isOverdue', 'isDueSoon',
+            'status', 'actionPlanSummary', 'evidenceNote', 'extensionReason',
+            'modifiedBy', 'modifiedAt'
+          ]))
+        );
+      allow delete: if isAdmin() && isValidId(issueId);
+    }
+
+    match /master_data/{key} {
+      allow get: if isValidId(key) && (
+        (key in ['access_users_registry', 'auditors', 'auditee_directory'] && isAdmin()) ||
+        (!(key in ['access_users_registry', 'auditors', 'auditee_directory']) && isActiveWorkspaceUser())
+      );
+      allow create, update: if isAdmin() && isValidId(key) && isValidMasterData(incoming()) &&
+        incoming().id == key && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(key);
+    }
+
+    match /audit_frequencies/{freqId} {
+      allow get: if isValidId(freqId) && freqId == 'global' && isActiveWorkspaceUser();
+      allow create, update: if isAdmin() && isValidId(freqId) && freqId == 'global' &&
+        isValidAuditFrequency(incoming()) && incoming().id == freqId && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(freqId);
+    }
+  }
+}

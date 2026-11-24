@@ -1,0 +1,434 @@
+{
+  "entities": {
+    "Admin": {
+      "title": "Admin",
+      "description": "Administrator role grant keyed by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "grantedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "grantedBy", "createdAt"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Authenticated user account record without PII.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "username": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "isActive": { "type": "boolean" },
+        "isLocked": { "type": "boolean" },
+        "failedLoginCount": { "type": "integer" },
+        "requiresPasswordChange": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastLogin": { "type": "string", "maxLength": 64 },
+        "modifiedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "username", "fullName", "role", "isActive", "isLocked", "failedLoginCount", "requiresPasswordChange", "createdAt", "modifiedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII record for a user account.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "updatedAt"]
+    },
+    "SystemUser": {
+      "title": "SystemUser",
+      "description": "Admin-managed system access registry entry.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "username": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "isActive": { "type": "boolean" },
+        "isLocked": { "type": "boolean" },
+        "failedLoginCount": { "type": "integer" },
+        "requiresPasswordChange": { "type": "boolean" },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "lastLogin": { "type": "string", "maxLength": 64 },
+        "modifiedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "username", "fullName", "email", "role", "isActive", "isLocked", "failedLoginCount", "requiresPasswordChange", "ownerId", "createdAt", "modifiedAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Internal Audit staff & auditee directory profile (non-PII).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "roleTitle": { "type": "string", "maxLength": 160 },
+        "fullLabel": { "type": "string", "maxLength": 240 },
+        "headerSubtitle": { "type": "string", "maxLength": 160 },
+        "department": { "type": "string", "maxLength": 160 },
+        "canApproveHead": { "type": "boolean" },
+        "canApproveIndependent": { "type": "boolean" },
+        "canApproveCAE": { "type": "boolean" },
+        "employeeNumber": { "type": "string", "maxLength": 64 },
+        "accountStatus": { "type": "string", "enum": ["Active", "Inactive", "Deactivated"] },
+        "failedLoginCount": { "type": "integer" },
+        "isLocked": { "type": "boolean" },
+        "requiresPasswordChange": { "type": "boolean" },
+        "mfaEnabled": { "type": "boolean" },
+        "isPrivileged": { "type": "boolean" },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "memberEmails": { "type": "array" },
+        "addedBy": { "type": "string", "maxLength": 160 },
+        "modifiedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "modifiedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "roleTitle", "fullLabel", "headerSubtitle", "department", "canApproveHead", "canApproveIndependent", "canApproveCAE", "ownerId", "memberUids", "memberEmails", "createdAt", "modifiedAt"]
+    },
+    "UserProfilePrivate": {
+      "title": "UserProfilePrivate",
+      "description": "Isolated email PII for a UserProfile.",
+      "type": "object",
+      "properties": {
+        "profileId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["profileId", "email", "ownerId", "updatedAt"]
+    },
+    "UniverseEntity": {
+      "title": "UniverseEntity",
+      "description": "Auditable entity in the Bank Audit Universe.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "code": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "division": { "type": "string", "maxLength": 160 },
+        "auditDivisionId": { "type": "string", "maxLength": 64 },
+        "category": { "type": "string", "maxLength": 120 },
+        "likelihood": { "type": "number" },
+        "impact": { "type": "number" },
+        "riskScore": { "type": "number" },
+        "riskLevel": { "type": "string", "enum": ["High", "Medium", "Low"] },
+        "lastAudited": { "type": "string", "maxLength": 64 },
+        "nextDue": { "type": "string", "maxLength": 64 },
+        "cycleMonths": { "type": "number" },
+        "defaultLead": { "type": "string", "maxLength": 160 },
+        "riskNotes": { "type": "string", "maxLength": 2000 },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "memberEmails": { "type": "array" },
+        "addedBy": { "type": "string", "maxLength": 160 },
+        "modifiedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "modifiedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "code", "name", "division", "category", "likelihood", "impact", "riskScore", "riskLevel", "lastAudited", "nextDue", "cycleMonths", "defaultLead", "ownerId", "memberUids", "memberEmails", "createdAt", "modifiedAt"]
+    },
+    "AuditEngagement": {
+      "title": "AuditEngagement",
+      "description": "Annual Audit Plan engagement record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ref": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "year": { "type": "integer" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "category": { "type": "string", "maxLength": 120 },
+        "department": { "type": "string", "maxLength": 160 },
+        "auditDivisionId": { "type": "string", "maxLength": 64 },
+        "entityName": { "type": "string", "maxLength": 240 },
+        "likelihood": { "type": "number" },
+        "impact": { "type": "number" },
+        "riskScore": { "type": "number" },
+        "riskLevel": { "type": "string", "enum": ["High", "Medium", "Low"] },
+        "lead": { "type": "string", "maxLength": 160 },
+        "headReviewer": { "type": "string", "maxLength": 160 },
+        "independentReviewer": { "type": "string", "maxLength": 160 },
+        "startDate": { "type": "string", "maxLength": 40 },
+        "endDate": { "type": "string", "maxLength": 40 },
+        "objectives": { "type": "string", "maxLength": 4000 },
+        "scope": { "type": "string", "maxLength": 4000 },
+        "criteria": { "type": "string", "maxLength": 4000 },
+        "addresseeName": { "type": "string", "maxLength": 160 },
+        "addresseeTitle": { "type": "string", "maxLength": 160 },
+        "copyFurnished": { "type": "string", "maxLength": 500 },
+        "durationDays": { "type": "number" },
+        "budgetedHours": { "type": "number" },
+        "status": { "type": "string", "maxLength": 64 },
+        "readyRatio": { "type": "string", "maxLength": 32 },
+        "lifecycleStage": { "type": "integer" },
+        "fieldworkPct": { "type": "number" },
+        "fieldworkDayCurrent": { "type": "number" },
+        "fieldworkDayTotal": { "type": "number" },
+        "reportStatus": { "type": "string", "enum": ["Draft", "Submitted to Lead", "Approved by Lead", "Approved by CAE"] },
+        "reportRating": { "type": "string", "maxLength": 64 },
+        "reportRef": { "type": "string", "maxLength": 64 },
+        "executiveSummary": { "type": "string", "maxLength": 8000 },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "memberEmails": { "type": "array" },
+        "addedBy": { "type": "string", "maxLength": 160 },
+        "modifiedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "modifiedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ref", "year", "title", "category", "department", "entityName", "likelihood", "impact", "riskScore", "riskLevel", "lead", "headReviewer", "independentReviewer", "startDate", "endDate", "durationDays", "budgetedHours", "status", "readyRatio", "lifecycleStage", "fieldworkPct", "fieldworkDayCurrent", "fieldworkDayTotal", "reportStatus", "reportRef", "executiveSummary", "ownerId", "memberUids", "memberEmails", "createdAt", "modifiedAt"]
+    },
+    "WorkingNote": {
+      "title": "WorkingNote",
+      "description": "Audit engagement working paper / testing note.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "engagementId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ref": { "type": "string", "maxLength": 40 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "controlArea": { "type": "string", "maxLength": 160 },
+        "author": { "type": "string", "maxLength": 160 },
+        "status": { "type": "string", "enum": ["Cleared", "For head review", "For independent review", "Draft", "Returned"] },
+        "hasException": { "type": "boolean" },
+        "updatedAt": { "type": "string", "maxLength": 64 },
+        "testingProcedure": { "type": "string", "maxLength": 4000 },
+        "observations": { "type": "string", "maxLength": 4000 },
+        "conclusion": { "type": "string", "maxLength": 4000 },
+        "reviewerComments": { "type": "string", "maxLength": 2000 },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "memberEmails": { "type": "array" },
+        "addedBy": { "type": "string", "maxLength": 160 },
+        "modifiedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "modifiedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "engagementId", "ref", "title", "controlArea", "author", "status", "hasException", "updatedAt", "testingProcedure", "conclusion", "ownerId", "memberUids", "memberEmails", "createdAt", "modifiedAt"]
+    },
+    "AuditFinding": {
+      "title": "AuditFinding",
+      "description": "Audit observation / finding linked to an engagement.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "engagementId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ref": { "type": "string", "maxLength": 40 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "severity": { "type": "string", "maxLength": 40 },
+        "category": { "type": "string", "maxLength": 120 },
+        "condition": { "type": "string", "maxLength": 4000 },
+        "criteria": { "type": "string", "maxLength": 4000 },
+        "cause": { "type": "string", "maxLength": 4000 },
+        "effect": { "type": "string", "maxLength": 4000 },
+        "recommendation": { "type": "string", "maxLength": 4000 },
+        "owner": { "type": "string", "maxLength": 160 },
+        "targetDate": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["Open", "Action plan submitted", "In remediation", "Validated & Closed"] },
+        "linkedNoteRef": { "type": "string", "maxLength": 40 },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "memberEmails": { "type": "array" },
+        "addedBy": { "type": "string", "maxLength": 160 },
+        "modifiedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "modifiedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "engagementId", "ref", "title", "severity", "condition", "criteria", "cause", "effect", "recommendation", "owner", "targetDate", "status", "linkedNoteRef", "ownerId", "memberUids", "memberEmails", "createdAt", "modifiedAt"]
+    },
+    "TimelineActivity": {
+      "title": "TimelineActivity",
+      "description": "Milestone activity on an audit engagement.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "engagementId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "roleResponsible": { "type": "string", "maxLength": 160 },
+        "dueDate": { "type": "string", "maxLength": 64 },
+        "completedDate": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["Completed", "Past due", "Pending"] },
+        "stageId": { "type": "integer" },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "memberEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "modifiedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "engagementId", "name", "roleResponsible", "dueDate", "status", "stageId", "ownerId", "memberUids", "memberEmails", "createdAt", "modifiedAt"]
+    },
+    "AuditFile": {
+      "title": "AuditFile",
+      "description": "Evidence file metadata attached to an engagement.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "engagementId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "folder": { "type": "string", "maxLength": 120 },
+        "size": { "type": "string", "maxLength": 40 },
+        "uploadedBy": { "type": "string", "maxLength": 160 },
+        "uploadedAt": { "type": "string", "maxLength": 64 },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "memberEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "modifiedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "engagementId", "name", "folder", "size", "uploadedBy", "uploadedAt", "ownerId", "memberUids", "memberEmails", "createdAt", "modifiedAt"]
+    },
+    "ActivityLogItem": {
+      "title": "ActivityLogItem",
+      "description": "Immutable engagement audit trail entry.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "engagementId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "timestamp": { "type": "string", "maxLength": 64 },
+        "actor": { "type": "string", "maxLength": 160 },
+        "action": { "type": "string", "minLength": 1, "maxLength": 400 },
+        "detail": { "type": "string", "maxLength": 1000 },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "memberEmails": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "engagementId", "timestamp", "actor", "action", "ownerId", "memberUids", "memberEmails", "createdAt"]
+    },
+    "IssueRegisterItem": {
+      "title": "IssueRegisterItem",
+      "description": "Audit issue tracking and remediation record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ref": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "auditRef": { "type": "string", "maxLength": 40 },
+        "auditTitle": { "type": "string", "maxLength": 240 },
+        "severity": { "type": "string", "maxLength": 40 },
+        "owner": { "type": "string", "maxLength": 160 },
+        "ownerUnit": { "type": "string", "maxLength": 160 },
+        "originalDue": { "type": "string", "maxLength": 64 },
+        "currentDue": { "type": "string", "maxLength": 64 },
+        "extensionCount": { "type": "integer" },
+        "daysStatus": { "type": "string", "maxLength": 64 },
+        "isOverdue": { "type": "boolean" },
+        "isDueSoon": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["Overdue", "In progress", "Open", "Extension requested", "For validation", "Closed"] },
+        "actionPlanSummary": { "type": "string", "maxLength": 4000 },
+        "evidenceNote": { "type": "string", "maxLength": 2000 },
+        "extensionReason": { "type": "string", "maxLength": 2000 },
+        "ownerId": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "memberEmails": { "type": "array" },
+        "addedBy": { "type": "string", "maxLength": 160 },
+        "modifiedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "modifiedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ref", "title", "auditRef", "auditTitle", "severity", "owner", "ownerUnit", "originalDue", "currentDue", "extensionCount", "daysStatus", "isOverdue", "isDueSoon", "status", "actionPlanSummary", "ownerId", "memberUids", "memberEmails", "createdAt", "modifiedAt"]
+    },
+    "MasterDataEntry": {
+      "title": "MasterDataEntry",
+      "description": "Keyed configuration or lookup list stored in master_data.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "data": { "type": "object" },
+        "addedBy": { "type": "string", "maxLength": 160 },
+        "modifiedBy": { "type": "string", "maxLength": 160 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "updatedAt"]
+    },
+    "AuditFrequency": {
+      "title": "AuditFrequency",
+      "description": "Global audit cycle frequency settings (months).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "high": { "type": "integer" },
+        "medium": { "type": "integer" },
+        "low": { "type": "integer" },
+        "addedBy": { "type": "string", "maxLength": 160 },
+        "modifiedBy": { "type": "string", "maxLength": 160 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "high", "medium", "low", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/Admin" },
+      "description": "Explicit administrator privileges keyed by Firebase UID."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Authenticated user account state (no PII)."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Isolated user PII (email)."
+    },
+    "/system_users/{userId}": {
+      "schema": { "$ref": "#/entities/SystemUser" },
+      "description": "Admin-managed access control accounts."
+    },
+    "/user_profiles/{profileId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Audit team directory profiles without PII."
+    },
+    "/user_profiles/{profileId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserProfilePrivate" },
+      "description": "Isolated email PII for audit team profiles."
+    },
+    "/universe_entities/{entityId}": {
+      "schema": { "$ref": "#/entities/UniverseEntity" },
+      "description": "Auditable entities in the Bank Audit Universe."
+    },
+    "/engagements/{engagementId}": {
+      "schema": { "$ref": "#/entities/AuditEngagement" },
+      "description": "Annual Audit Plan engagements."
+    },
+    "/engagements/{engagementId}/working_notes/{noteId}": {
+      "schema": { "$ref": "#/entities/WorkingNote" },
+      "description": "Working papers belonging to an engagement."
+    },
+    "/engagements/{engagementId}/findings/{findingId}": {
+      "schema": { "$ref": "#/entities/AuditFinding" },
+      "description": "Audit findings belonging to an engagement."
+    },
+    "/engagements/{engagementId}/timeline_activities/{activityId}": {
+      "schema": { "$ref": "#/entities/TimelineActivity" },
+      "description": "Timeline milestones belonging to an engagement."
+    },
+    "/engagements/{engagementId}/files/{fileId}": {
+      "schema": { "$ref": "#/entities/AuditFile" },
+      "description": "Evidence file metadata belonging to an engagement."
+    },
+    "/engagements/{engagementId}/activity_log/{logId}": {
+      "schema": { "$ref": "#/entities/ActivityLogItem" },
+      "description": "Immutable activity trail entries belonging to an engagement."
+    },
+    "/issues_register/{issueId}": {
+      "schema": { "$ref": "#/entities/IssueRegisterItem" },
+      "description": "Audit issues register and remediation tracking."
+    },
+    "/master_data/{key}": {
+      "schema": { "$ref": "#/entities/MasterDataEntry" },
+      "description": "Keyed master data and settings payloads."
+    },
+    "/audit_frequencies/{freqId}": {
+      "schema": { "$ref": "#/entities/AuditFrequency" },
+      "description": "Global audit cycle frequencies."
+    }
+  }
+}

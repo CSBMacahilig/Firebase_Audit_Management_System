@@ -1,0 +1,1635 @@
+import React, { useState, useEffect } from 'react';
+import {
+  AuditEngagement,
+  AuditDivisionRiskScale,
+  AuditFile,
+  AuditFinding,
+  EngagementSubTabId,
+  IssueRegisterItem,
+  LifecycleStageId,
+  MainTabId,
+  USERS,
+  UniverseEntity,
+  UniverseRecord,
+  UserProfile,
+  WorkingNote,
+} from './data/auditData';
+import { HeaderAndLifecycle } from './components/HeaderAndLifecycle';
+import { AnnualPlanView } from './components/AnnualPlanView';
+import { FieldworkView } from './components/FieldworkView';
+import { SettingsView } from './components/SettingsView';
+import {
+  AuditUniverseView,
+  DEFAULT_ROLE_PERMISSIONS_MATRIX,
+  DEFAULT_SETUP_ITEMS,
+  IssuesView,
+  MasterDataSetupAccessView,
+  OverviewView,
+  TimelineView,
+} from './components/AdditionalViews';
+import { LoginPage, ForcePasswordChange } from './components/LoginPage';
+import { AdminUserManagement } from './components/AdminUserManagement';
+import { BulkImportModal, BulkImportResult } from './components/BulkImportModal';
+import {
+  canAccessTab,
+  DEFAULT_ROLE_DEFINITIONS,
+  hasMatrixCapability,
+  RolePermissionMatrixRow,
+} from './utils/rbac';
+import { AccessGuard } from './components/AccessGuard';
+import {
+  AuthSession,
+  adminAddUser,
+  logout,
+  subscribeAuthSession,
+} from './utils/authStore';
+import {
+  fetchEngagements,
+  fetchIssues,
+  fetchUniverse,
+  fetchUserProfiles,
+  fetchFrequencies,
+  fetchAuditDivisionRiskScales,
+  fetchMasterData,
+  seedBaselineIfNeeded,
+  subscribeToWorkspaceChanges,
+  upsertEngagement,
+  upsertIssue,
+  upsertWorkingNote,
+  upsertFinding,
+  upsertTimelineActivity,
+  insertFile,
+  insertActivityLog,
+  saveFrequencies,
+  saveAuditDivisionRiskScales,
+  resetSystemToBaseline,
+  saveMasterData,
+  upsertUniverseEntity,
+  deleteUniverseEntity,
+  syncUniverseFromSupabase,
+  upsertUserProfile,
+  deleteUserProfile,
+  saveSizingConfigs,
+  AuditFrequencies,
+} from './utils/db';
+import { SizingConfig } from './data/auditData';
+import { canTransitionEngagementStatus, EngagementStatus } from './utils/brw';
+import { formatIdentifier, formatYearIdentifier, nextIdentifierSequence } from './utils/identifiers';
+import { getCurrentAccountEmail } from './utils/auditMetadata';
+import { formatDateForDisplay } from './utils/date';
+import {
+  BulkImportRow,
+  BulkImportTarget,
+  normalizeImportDate,
+  parseImportBoolean,
+} from './utils/bulkImport';
+import {
+  DEFAULT_AUDIT_DIVISION_RISK_SCALES,
+  getAuditCycleMonths,
+  getAuditFieldworkWeeks,
+  getAuditRiskLevel,
+} from './utils/riskScale';
+
+// Fallback profile used when user_profiles table is empty (fresh database)
+const FALLBACK_USER: UserProfile = {
+  id: 'system',
+  name: 'System User',
+  roleTitle: 'Internal Auditor',
+  fullLabel: 'System User – Internal Auditor',
+  headerSubtitle: 'Internal Auditor',
+  department: 'Internal Audit',
+  canApproveHead: false,
+  canApproveIndependent: false,
+  canApproveCAE: false,
+  accountStatus: 'Active',
+  failedLoginCount: 0,
+  isLocked: false,
+  requiresPasswordChange: false,
+  passwordHistory: [],
+  mfaEnabled: false,
+  isPrivileged: false,
+};
+
+export default function App() {
+  // ── Auth state ────────────────────────────────────────────────────────────
+  const [authSession, setAuthSession] = useState<AuthSession | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [fatalError, setFatalError] = useState<Error | null>(null);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [showBulkImport, setShowBulkImport] = useState(false);
+
+  // Subscribe to Firebase Authentication state
+  useEffect(() => {
+    const unsubscribe = subscribeAuthSession(
+      (session) => {
+        setAuthError('');
+        setFatalError(null);
+        setAuthSession(session);
+        if (session && session.role !== 'admin') {
+          setAccessMode('enforced');
+        }
+        setAuthReady(true);
+      },
+      (message) => {
+        setAuthError(message);
+        setAuthSession(null);
+        setAuthReady(true);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  const handleLoginSuccess = (session: AuthSession) => {
+    setAuthError('');
+    setFatalError(null);
+    if (session.role !== 'admin') setAccessMode('enforced');
+    setAuthSession(session);
+  };
+
+  const handleLogout = () => {
+    logout();
+    setAuthError('');
+    setFatalError(null);
+    setAuthSession(null);
+    setAccessMode('enforced');
+    setShowAdminPanel(false);
+  };
+
+  const handlePasswordChanged = (updatedSession: AuthSession) => {
+    setAuthSession(updatedSession);
+  };
+
+  // ── Audit app state ───────────────────────────────────────────────────────
+  const [engagements, setEngagements] = useState<AuditEngagement[]>([]);
+  const [issues, setIssues] = useState<IssueRegisterItem[]>([]);
+  const [universe, setUniverse] = useState<UniverseEntity[]>([]);
+  const [auditDivisionRiskScales, setAuditDivisionRiskScales] = useState<AuditDivisionRiskScale[]>(
+    DEFAULT_AUDIT_DIVISION_RISK_SCALES
+  );
+  const [userProfiles, setUserProfiles] = useState<UserProfile[]>([]);
+  const [permissionMatrix, setPermissionMatrix] = useState<RolePermissionMatrixRow[]>(DEFAULT_ROLE_PERMISSIONS_MATRIX);
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [accessMode, setAccessMode] = useState<'off' | 'simulated' | 'enforced'>(() => {
+    try {
+      const saved = localStorage.getItem('ams_access_control_mode');
+      if (saved === 'off' || saved === 'simulated' || saved === 'enforced') return saved;
+    } catch {
+      // ignore
+    }
+    return 'enforced';
+  });
+  const accessActive = accessMode !== 'off';
+  const setAndPersistAccessMode = (mode: 'off' | 'simulated' | 'enforced') => {
+    setAccessMode(mode);
+    try {
+      localStorage.setItem('ams_access_control_mode', mode);
+    } catch {
+      // ignore
+    }
+  };
+  const [dataLoading, setDataLoading] = useState(true);
+  const roleSimulationProfiles = userProfiles.length > 0 ? userProfiles : USERS;
+
+  const [frequencies, setFrequenciesState] = useState<AuditFrequencies>({
+    high: 12,
+    medium: 36,
+    low: 48,
+  });
+
+  // Load workspace data and attach real-time Firestore listeners once authenticated
+  useEffect(() => {
+    if (!authReady) return;
+    if (!authSession) {
+      setEngagements([]);
+      setIssues([]);
+      setUniverse([]);
+      setUserProfiles([]);
+      setCurrentUser(null);
+      setDataLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    let unsubWorkspace: (() => void) | null = null;
+    let engRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const loadWorkspace = async () => {
+      setDataLoading(true);
+      try {
+        await seedBaselineIfNeeded();
+        const [engs, iss, uni, profiles, freq, divisionScales, _roles, matrix] = await Promise.all([
+          fetchEngagements(),
+          fetchIssues(),
+          fetchUniverse(),
+          fetchUserProfiles(),
+          fetchFrequencies(),
+          fetchAuditDivisionRiskScales(),
+          fetchMasterData('app_roles', DEFAULT_ROLE_DEFINITIONS),
+          fetchMasterData('role_permissions_matrix', DEFAULT_ROLE_PERMISSIONS_MATRIX),
+        ]);
+        if (cancelled) return;
+
+        setEngagements(engs);
+        setIssues(iss);
+        setUniverse(uni);
+        setUserProfiles(profiles);
+        setAuditDivisionRiskScales(divisionScales);
+        setPermissionMatrix(matrix);
+
+        const matched = profiles.find(
+          (p) =>
+            p.name.toLowerCase() === authSession.fullName.toLowerCase() ||
+            (authSession.email && p.email && p.email.toLowerCase() === authSession.email.toLowerCase()) ||
+            (authSession.username && p.email && p.email.toLowerCase().startsWith(authSession.username.toLowerCase())) ||
+            p.fullLabel.toLowerCase().includes(authSession.username.toLowerCase()) ||
+            (authSession.username && p.employeeNumber && p.employeeNumber.toLowerCase() === authSession.username.toLowerCase())
+        );
+        setCurrentUser(matched ?? profiles[0] ?? USERS[0] ?? FALLBACK_USER);
+        setFrequenciesState(freq);
+
+        let skipInitialEngSnap = true;
+        unsubWorkspace = subscribeToWorkspaceChanges({
+          onEngagementsChanged: () => {
+            if (skipInitialEngSnap) {
+              skipInitialEngSnap = false;
+              return;
+            }
+            if (engRefreshTimer) clearTimeout(engRefreshTimer);
+            engRefreshTimer = setTimeout(() => {
+              fetchEngagements()
+                .then((latest) => {
+                  if (!cancelled) setEngagements(latest);
+                })
+                .catch((err) => {
+                  console.error('Failed to refresh engagements from Firestore:', err);
+                });
+            }, 250);
+          },
+          onIssuesChanged: (latestIssues) => {
+            if (!cancelled) setIssues(latestIssues);
+          },
+          onUniverseChanged: (latestUniverse) => {
+            if (!cancelled) setUniverse(latestUniverse);
+          },
+        });
+      } catch (err) {
+        if (!cancelled) {
+          console.error('Failed to load data from Firestore:', err);
+          setFatalError(err instanceof Error ? err : new Error('Failed to load workspace data from Firestore.'));
+        }
+      } finally {
+        if (!cancelled) {
+          setDataLoading(false);
+        }
+      }
+    };
+
+    void loadWorkspace();
+
+    return () => {
+      cancelled = true;
+      if (engRefreshTimer) clearTimeout(engRefreshTimer);
+      if (unsubWorkspace) unsubWorkspace();
+    };
+  }, [authReady, authSession?.userId]);
+
+  const handleUpdateIssue = (issue: IssueRegisterItem) => {
+    setIssues((prev) => prev.map((i) => i.id === issue.id ? issue : i));
+    upsertIssue(issue);
+  };
+
+  const handleBulkImport = async (
+    target: BulkImportTarget,
+    rows: BulkImportRow[]
+  ): Promise<BulkImportResult> => {
+    const failures: BulkImportResult['failures'] = [];
+    const importedUniverse: UniverseEntity[] = [];
+    const importedProfiles: UserProfile[] = [];
+    const importedEngagements: AuditEngagement[] = [];
+    const importedIssues: IssueRegisterItem[] = [];
+    const engagementUpdates = new Map(engagements.map((engagement) => [engagement.id, engagement]));
+    const actor = currentUser?.name ?? authSession?.fullName ?? 'System User';
+    const actorEmail = getCurrentAccountEmail();
+
+    const getText = (row: BulkImportRow, key: string): string => row.values[key]?.trim() ?? '';
+    const requireNumber = (row: BulkImportRow, key: string): number => {
+      const value = Number(getText(row, key));
+      if (!Number.isFinite(value)) throw new Error(`${key} is not a valid number.`);
+      return value;
+    };
+    const requireDate = (row: BulkImportRow, key: string): string => {
+      const value = normalizeImportDate(getText(row, key));
+      if (!value) throw new Error(`${key} is not a valid date.`);
+      return value;
+    };
+    const findScale = (value: string) => auditDivisionRiskScales.find(
+      (scale) => scale.id.toLowerCase() === value.toLowerCase() ||
+        scale.name.toLowerCase() === value.toLowerCase()
+    );
+    const addMonths = (date: string, months: number): string => {
+      const due = new Date(`${date}T00:00:00.000Z`);
+      const day = due.getUTCDate();
+      due.setUTCDate(1);
+      due.setUTCMonth(due.getUTCMonth() + months);
+      const finalDay = new Date(Date.UTC(due.getUTCFullYear(), due.getUTCMonth() + 1, 0)).getUTCDate();
+      due.setUTCDate(Math.min(day, finalDay));
+      return due.toISOString().slice(0, 10);
+    };
+
+    for (const row of rows) {
+      try {
+        const values = row.values;
+        if (target === 'universe') {
+          const isSupabaseExport = 'audit_division_id' in values || 'next_due' in values || 'category' in values;
+          const requestedDivision = getText(row, 'audit_division');
+          const scale = requestedDivision
+            ? findScale(requestedDivision)
+            : isSupabaseExport
+            ? auditDivisionRiskScales[0]
+            : undefined;
+          if (!scale) throw new Error('Configured audit division could not be resolved.');
+          const likelihood = requireNumber(row, 'likelihood');
+          const impact = requireNumber(row, 'impact');
+          const score = getText(row, 'risk_score')
+            ? requireNumber(row, 'risk_score')
+            : likelihood * impact;
+          const riskLevel = getAuditRiskLevel(score, scale.id, auditDivisionRiskScales);
+          const requestedCycle = getText(row, 'cycle_months');
+          const cycleMonths = requestedCycle
+            ? requireNumber(row, 'cycle_months')
+            : getAuditCycleMonths(riskLevel, scale.id, auditDivisionRiskScales, frequencies);
+          const rawLastAudited = getText(row, 'last_audited');
+          const rawNextDue = getText(row, 'next_due');
+          const lastAuditedIso = normalizeImportDate(rawLastAudited);
+          if (!lastAuditedIso && !(isSupabaseExport && rawNextDue && rawLastAudited)) {
+            throw new Error('last_audited is not a valid date.');
+          }
+          const code = getText(row, 'code') || formatIdentifier(
+            'AU',
+            nextIdentifierSequence([...universe, ...importedUniverse], 'AU')
+          );
+          const entity: UniverseEntity = {
+            id: (getText(row, 'id') || code).toLowerCase(),
+            code,
+            name: getText(row, 'name'),
+            division: getText(row, 'division'),
+            auditDivisionId: requestedDivision || !isSupabaseExport ? scale.id : undefined,
+            category: getText(row, 'entity_type'),
+            likelihood,
+            impact,
+            riskScore: score,
+            riskLevel,
+            lastAudited: lastAuditedIso ? formatDateForDisplay(lastAuditedIso) : rawLastAudited,
+            nextDue: rawNextDue || (lastAuditedIso ? formatDateForDisplay(addMonths(lastAuditedIso, cycleMonths)) : ''),
+            cycleMonths,
+            defaultLead: getText(row, 'default_lead'),
+            riskNotes: getText(row, 'risk_notes'),
+            addedBy: actorEmail,
+            modifiedBy: actorEmail,
+            modifiedAt: new Date().toISOString(),
+          };
+          const error = await upsertUniverseEntity(entity);
+          if (error) throw new Error(error);
+          importedUniverse.push(entity);
+        } else if (target === 'profiles') {
+          const name = getText(row, 'name');
+          const roleTitle = getText(row, 'role_title');
+          const id = formatIdentifier(
+            'IA',
+            nextIdentifierSequence([...userProfiles, ...importedProfiles], 'IA')
+          ).toLowerCase();
+          const profile: UserProfile = {
+            id,
+            name,
+            email: getText(row, 'email').toLowerCase(),
+            roleTitle,
+            fullLabel: `${name} – ${roleTitle}`,
+            headerSubtitle: getText(row, 'header_subtitle') || roleTitle,
+            department: getText(row, 'department'),
+            canApproveHead: parseImportBoolean(getText(row, 'can_approve_head')),
+            canApproveIndependent: parseImportBoolean(getText(row, 'can_approve_independent')),
+            canApproveCAE: parseImportBoolean(getText(row, 'can_approve_cae')),
+            employeeNumber: getText(row, 'employee_number'),
+            accountStatus: 'Active',
+            failedLoginCount: 0,
+            isLocked: false,
+            requiresPasswordChange: false,
+            passwordHistory: [],
+            mfaEnabled: false,
+            isPrivileged: false,
+          };
+          const error = await upsertUserProfile(profile);
+          if (error) throw new Error(error);
+          const username = getText(row, 'username');
+          if (username) {
+            if (!authSession || authSession.role !== 'admin') {
+              const rollbackError = await deleteUserProfile(profile.id);
+              if (rollbackError) importedProfiles.push(profile);
+              throw new Error(
+                rollbackError
+                  ? `Login creation requires an admin; profile rollback also failed: ${rollbackError}`
+                  : 'Login creation requires an admin. The imported profile was rolled back.'
+              );
+            }
+            const accountResult = await adminAddUser(authSession, {
+              username,
+              fullName: profile.name,
+              email: profile.email ?? '',
+              role: 'user',
+              password: getText(row, 'initial_password'),
+            });
+            if (!accountResult.success) {
+              const rollbackError = await deleteUserProfile(profile.id);
+              if (rollbackError) importedProfiles.push(profile);
+              throw new Error(
+                rollbackError
+                  ? `Login creation failed (${accountResult.error ?? 'unknown error'}); profile rollback also failed: ${rollbackError}`
+                  : `Login creation failed: ${accountResult.error ?? 'unknown error'}. The imported profile was rolled back.`
+              );
+            }
+          }
+          importedProfiles.push(profile);
+        } else if (target === 'annual_plan') {
+          const entity = universe.find(
+            (item) => item.code.toLowerCase() === getText(row, 'entity_code').toLowerCase()
+          );
+          const scale = findScale(getText(row, 'audit_division'));
+          if (!entity) throw new Error('Audit Universe entity could not be resolved.');
+          if (!scale) throw new Error('Configured audit division could not be resolved.');
+          const startDate = requireDate(row, 'start_date');
+          const endDate = requireDate(row, 'end_date');
+          const year = getText(row, 'year') ? requireNumber(row, 'year') : Number(startDate.slice(0, 4));
+          const yearEngagements = [...engagements, ...importedEngagements].filter((engagement) => engagement.year === year);
+          const nextSequence = Math.max(
+            0,
+            ...yearEngagements.map((engagement) => {
+              const match = engagement.ref.match(new RegExp(`^AE-${year}-(\\d+)$`, 'i'));
+              return match ? Number(match[1]) : 0;
+            })
+          ) + 1;
+          const ref = getText(row, 'ref') || formatYearIdentifier('AE', year, nextSequence);
+          const likelihood = requireNumber(row, 'likelihood');
+          const impact = requireNumber(row, 'impact');
+          const riskScore = likelihood * impact;
+          const riskLevel = getAuditRiskLevel(riskScore, scale.id, auditDivisionRiskScales);
+          const fieldworkWeeks = getAuditFieldworkWeeks(riskLevel, scale.id, auditDivisionRiskScales);
+          const budgetedHours = requireNumber(row, 'budgeted_hours');
+          const title = getText(row, 'title');
+          const engagement: AuditEngagement = {
+            id: ref.toLowerCase(),
+            ref,
+            year,
+            title,
+            category: getText(row, 'audit_type'),
+            department: entity.division,
+            auditDivisionId: scale.id,
+            entityName: entity.name,
+            likelihood,
+            impact,
+            riskScore,
+            riskLevel,
+            lead: getText(row, 'lead'),
+            headReviewer: getText(row, 'head_reviewer'),
+            independentReviewer: getText(row, 'independent_reviewer') || 'Not needed',
+            startDate,
+            endDate,
+            objectives: getText(row, 'objectives'),
+            scope: getText(row, 'scope'),
+            criteria: getText(row, 'criteria'),
+            addresseeName: getText(row, 'addressee_name'),
+            addresseeTitle: getText(row, 'addressee_title'),
+            copyFurnished: getText(row, 'copy_furnished'),
+            durationDays: Math.floor((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86_400_000) + 1,
+            budgetedHours,
+            status: getText(row, 'status'),
+            readyRatio: '0/9 ready',
+            lifecycleStage: 1,
+            fieldworkPct: 0,
+            fieldworkDayCurrent: 0,
+            fieldworkDayTotal: fieldworkWeeks * 5,
+            reportStatus: 'Draft',
+            reportRef: ref.replace(/^AE-/i, 'IA-') + '-RPT',
+            executiveSummary: getText(row, 'executive_summary') || getText(row, 'objectives'),
+            addedBy: actorEmail,
+            modifiedBy: actorEmail,
+            modifiedAt: new Date().toISOString(),
+            workingNotes: [],
+            findings: [],
+            timelineActivities: [],
+            files: [],
+            activityLog: [{
+              id: formatIdentifier('AL', 1).toLowerCase(),
+              timestamp: new Date().toLocaleString('en-GB'),
+              actor,
+              action: `${ref} imported into the Annual Audit Plan`,
+            }],
+          };
+          const error = await upsertEngagement(engagement);
+          if (error) throw new Error(error);
+          importedEngagements.push(engagement);
+        } else if (target === 'working_notes') {
+          const engagement = [...engagementUpdates.values()].find(
+            (item) => item.ref.toLowerCase() === getText(row, 'audit_ref').toLowerCase() ||
+              item.id.toLowerCase() === getText(row, 'audit_ref').toLowerCase()
+          );
+          if (!engagement) throw new Error('Engagement could not be resolved.');
+          const ref = getText(row, 'ref') || formatIdentifier(
+            'WP',
+            nextIdentifierSequence(engagement.workingNotes, 'WP')
+          );
+          const conclusion = getText(row, 'conclusion');
+          const note: WorkingNote = {
+            id: ref.toLowerCase(),
+            ref,
+            title: getText(row, 'title'),
+            controlArea: getText(row, 'control_area'),
+            author: getText(row, 'author') || actor,
+            status: (getText(row, 'status') || 'Draft') as WorkingNote['status'],
+            hasException: conclusion === 'Exception noted',
+            updatedAt: new Date().toISOString(),
+            testingProcedure: getText(row, 'testing_procedure'),
+            observations: getText(row, 'observations'),
+            conclusion,
+            addedBy: actorEmail,
+            modifiedBy: actorEmail,
+            modifiedAt: new Date().toISOString(),
+          };
+          const error = await upsertWorkingNote(engagement.id, note);
+          if (error) throw new Error(error);
+          engagementUpdates.set(engagement.id, {
+            ...engagement,
+            workingNotes: [...engagement.workingNotes, note],
+          });
+        } else if (target === 'findings') {
+          const engagement = [...engagementUpdates.values()].find(
+            (item) => item.ref.toLowerCase() === getText(row, 'audit_ref').toLowerCase() ||
+              item.id.toLowerCase() === getText(row, 'audit_ref').toLowerCase()
+          );
+          if (!engagement) throw new Error('Engagement could not be resolved.');
+          const ref = getText(row, 'ref') || formatIdentifier(
+            'FN',
+            nextIdentifierSequence(engagement.findings, 'FN')
+          );
+          const finding: AuditFinding = {
+            id: ref.toLowerCase(),
+            ref,
+            title: getText(row, 'title'),
+            severity: getText(row, 'severity'),
+            category: getText(row, 'category'),
+            condition: getText(row, 'condition'),
+            criteria: getText(row, 'criteria'),
+            cause: getText(row, 'cause'),
+            effect: getText(row, 'effect'),
+            recommendation: getText(row, 'recommendation'),
+            owner: getText(row, 'owner'),
+            targetDate: formatDateForDisplay(requireDate(row, 'target_date')),
+            status: 'Open',
+            linkedNoteRef: getText(row, 'linked_note_ref'),
+            addedBy: actorEmail,
+            modifiedBy: actorEmail,
+            modifiedAt: new Date().toISOString(),
+          };
+          const error = await upsertFinding(engagement.id, finding);
+          if (error) throw new Error(error);
+          engagementUpdates.set(engagement.id, {
+            ...engagement,
+            findings: [...engagement.findings, finding],
+          });
+        } else {
+          const engagement = [...engagementUpdates.values()].find(
+            (item) => item.ref.toLowerCase() === getText(row, 'audit_ref').toLowerCase() ||
+              item.id.toLowerCase() === getText(row, 'audit_ref').toLowerCase()
+          );
+          if (!engagement) throw new Error('Engagement could not be resolved.');
+          const originalDueIso = requireDate(row, 'original_due');
+          const currentDueIso = getText(row, 'current_due')
+            ? requireDate(row, 'current_due')
+            : originalDueIso;
+          const status = (getText(row, 'status') || 'Open') as IssueRegisterItem['status'];
+          const today = new Date().toISOString().slice(0, 10);
+          const dayDifference = Math.ceil(
+            (Date.parse(`${currentDueIso}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000
+          );
+          const ref = getText(row, 'ref') || formatIdentifier(
+            'IS',
+            nextIdentifierSequence([...issues, ...importedIssues], 'IS')
+          );
+          const issue: IssueRegisterItem = {
+            id: ref.toLowerCase(),
+            ref,
+            title: getText(row, 'title'),
+            auditRef: engagement.ref,
+            auditTitle: engagement.title,
+            severity: getText(row, 'severity'),
+            owner: getText(row, 'owner'),
+            ownerUnit: getText(row, 'owner_unit'),
+            originalDue: formatDateForDisplay(originalDueIso),
+            currentDue: formatDateForDisplay(currentDueIso),
+            extensionCount: getText(row, 'extension_count') ? requireNumber(row, 'extension_count') : 0,
+            daysStatus: status === 'Closed'
+              ? `Closed ${formatDateForDisplay(today)}`
+              : dayDifference < 0
+                ? `${Math.abs(dayDifference)} days overdue`
+                : `${dayDifference} days remaining`,
+            isOverdue: status !== 'Closed' && dayDifference < 0,
+            isDueSoon: status !== 'Closed' && dayDifference >= 0 && dayDifference <= 30,
+            status,
+            actionPlanSummary: getText(row, 'action_plan_summary'),
+            evidenceNote: getText(row, 'evidence_note') || undefined,
+            addedBy: actorEmail,
+            modifiedBy: actorEmail,
+            modifiedAt: new Date().toISOString(),
+          };
+          const error = await upsertIssue(issue);
+          if (error) throw new Error(error);
+          importedIssues.push(issue);
+        }
+      } catch (error) {
+        failures.push({
+          line: row.line,
+          message: error instanceof Error ? error.message : 'Row could not be imported.',
+        });
+      }
+    }
+
+    if (importedUniverse.length) setUniverse((previous) => [...importedUniverse, ...previous]);
+    if (importedProfiles.length) setUserProfiles((previous) => [...importedProfiles, ...previous]);
+    if (importedEngagements.length) setEngagements((previous) => [...importedEngagements, ...previous]);
+    if (target === 'working_notes' || target === 'findings') {
+      setEngagements((previous) => previous.map((engagement) => engagementUpdates.get(engagement.id) ?? engagement));
+    }
+    if (importedIssues.length) setIssues((previous) => [...importedIssues, ...previous]);
+
+    return { imported: rows.length - failures.length, failures };
+  };
+
+  const handleAddUniverseEntity = (entity: UniverseEntity) => {
+    setUniverse((prev) => [entity, ...prev]);
+    upsertUniverseEntity(entity);
+  };
+
+  const handleUpdateUniverseEntity = (entity: UniverseEntity) => {
+    setUniverse((prev) => prev.map((item) => item.id === entity.id ? entity : item));
+    upsertUniverseEntity(entity);
+  };
+
+  const handleUpdateEngagement = (engagement: AuditEngagement) => {
+    setEngagements((prev) => prev.map((item) => item.id === engagement.id ? engagement : item));
+    upsertEngagement(engagement);
+  };
+
+  const handleDeleteUniverseEntity = (id: string) => {
+    setUniverse((prev) => prev.filter((u) => u.id !== id));
+    deleteUniverseEntity(id);
+  };
+
+  const handleSyncUniverseFromSupabase = async () => {
+    const res = await syncUniverseFromSupabase();
+    if (!res.error) {
+      const latest = await fetchUniverse();
+      setUniverse(latest);
+    }
+    return res;
+  };
+
+  const handleAddUserProfile = (profile: UserProfile) => {
+    setUserProfiles((prev) => [...prev, profile]);
+    upsertUserProfile(profile);
+  };
+
+  const handleUpdateUserProfile = (profile: UserProfile) => {
+    setUserProfiles((prev) => prev.map((p) => p.id === profile.id ? profile : p));
+    upsertUserProfile(profile);
+  };
+
+  const handleDeleteUserProfile = (id: string) => {
+    setUserProfiles((prev) => prev.filter((p) => p.id !== id));
+    deleteUserProfile(id);
+  };
+
+  const handleSaveSizing = (configs: SizingConfig[]) => {
+    saveSizingConfigs(configs);
+  };
+
+  // Navigation & Lifecycle Progress State
+  const [activeTab, setActiveTab] = useState<MainTabId>('overview');
+  const [activeLifecycleStage, setActiveLifecycleStage] = useState<LifecycleStageId>(1);
+  const [selectedEngagementId, setSelectedEngagementId] = useState<string | null>(null);
+  const [activeSubTab, setActiveSubTab] = useState<EngagementSubTabId>('dashboard');
+
+  const selectedEngagement =
+    engagements.find((e) => e.id === selectedEngagementId) || null;
+
+  // Synchronize Main Tab selection with Audit Lifecycle Breadcrumb progress
+  const handleSelectTab = (tab: MainTabId) => {
+    setActiveTab(tab);
+    switch (tab) {
+      case 'overview':
+      case 'universe':
+      case 'annual-plan':
+      case 'timeline':
+        setActiveLifecycleStage(1);
+        break;
+      case 'fieldwork':
+        if (selectedEngagement) {
+          setActiveLifecycleStage(selectedEngagement.lifecycleStage);
+        } else {
+          setActiveLifecycleStage(2);
+        }
+        break;
+      case 'issues':
+        setActiveLifecycleStage(5);
+        break;
+      case 'settings':
+      case 'master-data':
+      case 'setup':
+      case 'access':
+        setActiveLifecycleStage(1);
+        break;
+    }
+  };
+
+  const handleSelectLifecycleStage = (stageId: LifecycleStageId) => {
+    setActiveLifecycleStage(stageId);
+
+    switch (stageId) {
+      case 1:
+        setActiveTab('annual-plan');
+        break;
+      case 2:
+        setActiveTab('fieldwork');
+        if (!selectedEngagementId) {
+          setSelectedEngagementId('aud-2026-006');
+        }
+        setActiveSubTab('dashboard');
+        break;
+      case 3:
+        setActiveTab('fieldwork');
+        if (!selectedEngagementId) {
+          setSelectedEngagementId('aud-2026-006');
+        }
+        setActiveSubTab('findings');
+        break;
+      case 4:
+        setActiveTab('fieldwork');
+        if (!selectedEngagementId) {
+          setSelectedEngagementId('aud-2026-006');
+        }
+        setActiveSubTab('auditee');
+        break;
+      case 5:
+        setActiveTab('issues');
+        break;
+      case 6:
+        setActiveTab('issues');
+        break;
+      case 7:
+        setActiveTab('universe');
+        break;
+    }
+  };
+
+  const handleSelectSubTab = (subTab: EngagementSubTabId) => {
+    setActiveSubTab(subTab);
+    if (subTab === 'working-notes' || subTab === 'review' || subTab === 'files') {
+      setActiveLifecycleStage(2);
+    } else if (subTab === 'findings' || subTab === 'report') {
+      setActiveLifecycleStage(3);
+    } else if (subTab === 'auditee') {
+      setActiveLifecycleStage(4);
+    } else if (subTab === 'dashboard' && selectedEngagement) {
+      setActiveLifecycleStage(selectedEngagement.lifecycleStage);
+    }
+  };
+
+  const handleSelectEngagement = (eng: AuditEngagement | null) => {
+    if (!eng) {
+      setSelectedEngagementId(null);
+      setActiveLifecycleStage(2);
+      return;
+    }
+    setSelectedEngagementId(eng.id);
+    setActiveTab('fieldwork');
+    setActiveSubTab('dashboard');
+    setActiveLifecycleStage(eng.lifecycleStage);
+  };
+
+  const handleAdvanceEngagementStage = (nextStage: LifecycleStageId) => {
+    if (!selectedEngagementId) return;
+    setActiveLifecycleStage(nextStage);
+    setEngagements((prev) =>
+      prev.map((eng) => {
+        if (eng.id !== selectedEngagementId) return eng;
+        const nextStatus =
+          nextStage === 1
+            ? 'Planned'
+            : nextStage === 2
+            ? 'In progress'
+            : nextStage >= 6
+            ? 'Closed'
+            : 'Reporting';
+        const logEntry = {
+          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
+          timestamp: '4 Oct 2026, 14:10',
+          actor: currentUser?.name ?? '',
+          action: `Engagement lifecycle advanced to Stage 0${nextStage}`,
+        };
+        const updated: AuditEngagement = {
+          ...eng,
+          lifecycleStage: nextStage,
+          status: nextStatus,
+          fieldworkPct: nextStage >= 3 ? Math.max(eng.fieldworkPct, 75) : eng.fieldworkPct,
+          activityLog: [logEntry, ...eng.activityLog],
+        };
+        upsertEngagement(updated);
+        insertActivityLog(eng.id, logEntry);
+        return updated;
+      })
+    );
+  };
+
+  const handleApproveWorkingNote = (
+    engagementId: string,
+    noteId: string,
+    newStatus: WorkingNote['status'],
+    comment?: string
+  ) => {
+    setEngagements((prev) =>
+      prev.map((eng) => {
+        if (eng.id !== engagementId) return eng;
+        const updatedNotes = eng.workingNotes.map((wn) =>
+          wn.id === noteId
+            ? {
+                ...wn,
+                status: newStatus,
+                updatedAt: '4 Oct 2026, 14:15',
+                reviewerComments: comment || wn.reviewerComments,
+              }
+            : wn
+        );
+        const noteObj = eng.workingNotes.find((w) => w.id === noteId);
+        const updatedNote = updatedNotes.find((w) => w.id === noteId);
+        if (updatedNote) upsertWorkingNote(engagementId, updatedNote);
+
+        const logEntry = {
+          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
+          timestamp: '4 Oct 2026, 14:15',
+          actor: currentUser?.name ?? '',
+          action: `${noteObj?.ref || 'Working note'} marked as ${newStatus}`,
+          detail: comment ? `Reviewer note: ${comment}` : undefined,
+        };
+        const updated: AuditEngagement = {
+          ...eng,
+          fieldworkPct: Math.min(100, eng.fieldworkPct + 12),
+          workingNotes: updatedNotes,
+          activityLog: [logEntry, ...eng.activityLog],
+        };
+        upsertEngagement(updated);
+        insertActivityLog(engagementId, logEntry);
+        return updated;
+      })
+    );
+  };
+
+  const handleCompleteActivity = (engagementId: string, activityId: string) => {
+    setEngagements((prev) =>
+      prev.map((eng) => {
+        if (eng.id !== engagementId) return eng;
+        const actObj = eng.timelineActivities.find((a) => a.id === activityId);
+        const updatedActivities = eng.timelineActivities.map((a) =>
+          a.id === activityId
+            ? { ...a, status: 'Completed' as const, completedDate: '4 Oct 2026' }
+            : a
+        );
+        const updatedActivity = updatedActivities.find((a) => a.id === activityId);
+        if (updatedActivity) upsertTimelineActivity(engagementId, updatedActivity);
+
+        const logEntry = {
+          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
+          timestamp: '4 Oct 2026, 14:18',
+          actor: currentUser?.name ?? '',
+          action: `Timeline activity completed: ${actObj?.name || ''}`,
+        };
+        const updated: AuditEngagement = {
+          ...eng,
+          timelineActivities: updatedActivities,
+          activityLog: [logEntry, ...eng.activityLog],
+        };
+        upsertEngagement(updated);
+        insertActivityLog(engagementId, logEntry);
+        return updated;
+      })
+    );
+  };
+
+  const handleAddWorkingNote = (
+    engagementId: string,
+    title: string,
+    controlArea: string,
+    procedure: string,
+    observations: string,
+    conclusion: WorkingNote['conclusion']
+  ) => {
+    setEngagements((prev) =>
+      prev.map((eng) => {
+        if (eng.id !== engagementId) return eng;
+        const nextNum = eng.workingNotes.length + 1;
+        const ref = formatIdentifier('WP', nextNum);
+        const newNote: WorkingNote = {
+          id: ref.toLowerCase(),
+          ref,
+          title,
+          controlArea,
+          author: currentUser?.name ?? '',
+          status: 'For head review',
+          hasException: conclusion === 'Exception noted',
+          updatedAt: '4 Oct 2026, 14:20',
+          testingProcedure: procedure,
+          observations,
+          conclusion,
+        };
+        upsertWorkingNote(engagementId, newNote);
+
+        const logEntry = {
+          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
+          timestamp: '4 Oct 2026, 14:20',
+          actor: currentUser?.name ?? '',
+          action: `${ref} (${title}) created and submitted for review`,
+        };
+        const updated: AuditEngagement = {
+          ...eng,
+          workingNotes: [...eng.workingNotes, newNote],
+          activityLog: [logEntry, ...eng.activityLog],
+        };
+        upsertEngagement(updated);
+        insertActivityLog(engagementId, logEntry);
+        return updated;
+      })
+    );
+  };
+
+  const handleValidateAndCloseFinding = (engagementId: string, findingId: string) => {
+    setEngagements((prev) =>
+      prev.map((eng) => {
+        if (eng.id !== engagementId) return eng;
+        const fnd = eng.findings.find((f) => f.id === findingId);
+        const updatedFindings = eng.findings.map((f) =>
+          f.id === findingId ? { ...f, status: 'Validated & Closed' as const } : f
+        );
+        const updatedFinding = updatedFindings.find((f) => f.id === findingId);
+        if (updatedFinding) upsertFinding(engagementId, updatedFinding);
+
+        const logEntry = {
+          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
+          timestamp: '4 Oct 2026, 14:25',
+          actor: currentUser?.name ?? '',
+          action: `Finding ${fnd?.ref || ''} evidence validated & closed`,
+        };
+        const updated: AuditEngagement = {
+          ...eng,
+          findings: updatedFindings,
+          activityLog: [logEntry, ...eng.activityLog],
+        };
+        upsertEngagement(updated);
+        insertActivityLog(engagementId, logEntry);
+        return updated;
+      })
+    );
+    setActiveLifecycleStage(6);
+  };
+
+  const handleAddFinding = (engagementId: string, finding: AuditFinding) => {
+    setEngagements((prev) =>
+      prev.map((eng) => {
+        if (eng.id !== engagementId) return eng;
+        upsertFinding(engagementId, finding);
+        const logEntry = {
+          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
+          timestamp: '4 Oct 2026, 14:28',
+          actor: currentUser?.name ?? '',
+          action: `Finding ${finding.ref} (${finding.title}) drafted`,
+          detail: `Severity: ${finding.severity} · Linked to ${finding.linkedNoteRef}`,
+        };
+        const updated: AuditEngagement = {
+          ...eng,
+          findings: [...eng.findings, finding],
+          activityLog: [logEntry, ...eng.activityLog],
+        };
+        upsertEngagement(updated);
+        insertActivityLog(engagementId, logEntry);
+        return updated;
+      })
+    );
+  };
+
+  const handleUpdateFindingStatus = (
+    engagementId: string,
+    findingId: string,
+    newStatus: AuditFinding['status'],
+    owner?: string,
+    targetDate?: string
+  ) => {
+    setEngagements((prev) =>
+      prev.map((eng) => {
+        if (eng.id !== engagementId) return eng;
+        const target = eng.findings.find((f) => f.id === findingId);
+        const updatedFindings = eng.findings.map((f) =>
+          f.id === findingId
+            ? {
+                ...f,
+                status: newStatus,
+                owner: owner || f.owner,
+                targetDate: targetDate || f.targetDate,
+              }
+            : f
+        );
+        const updatedFinding = updatedFindings.find((f) => f.id === findingId);
+        if (updatedFinding) upsertFinding(engagementId, updatedFinding);
+
+        const logEntry = {
+          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
+          timestamp: '4 Oct 2026, 14:30',
+          actor: currentUser?.name ?? '',
+          action: `${target?.ref || 'Finding'} action plan updated (${newStatus})`,
+          detail: owner && targetDate ? `Owner: ${owner} · Due ${targetDate}` : undefined,
+        };
+        const updated: AuditEngagement = {
+          ...eng,
+          findings: updatedFindings,
+          activityLog: [logEntry, ...eng.activityLog],
+        };
+        upsertEngagement(updated);
+        insertActivityLog(engagementId, logEntry);
+        return updated;
+      })
+    );
+  };
+
+  const handleUploadFile = (engagementId: string, file: AuditFile) => {
+    setEngagements((prev) =>
+      prev.map((eng) => {
+        if (eng.id !== engagementId) return eng;
+        insertFile(engagementId, file);
+        const logEntry = {
+          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
+          timestamp: file.uploadedAt,
+          actor: currentUser?.name ?? '',
+          action: 'File uploaded',
+          detail: `${file.folder} / ${file.name} (${file.size})`,
+        };
+        const updated: AuditEngagement = {
+          ...eng,
+          files: [file, ...eng.files],
+          activityLog: [logEntry, ...eng.activityLog],
+        };
+        upsertEngagement(updated);
+        insertActivityLog(engagementId, logEntry);
+        return updated;
+      })
+    );
+  };
+
+  const handleUpdateReport = (
+    engagementId: string,
+    newStatus: AuditEngagement['reportStatus'],
+    executiveSummary: string,
+    reportRating?: string
+  ) => {
+    setEngagements((prev) =>
+      prev.map((eng) => {
+        if (eng.id !== engagementId) return eng;
+        const logEntry = {
+          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
+          timestamp: new Date().toLocaleString('en-GB'),
+          actor: currentUser?.name ?? '',
+          action: reportRating !== undefined && reportRating !== eng.reportRating && newStatus === eng.reportStatus
+            ? `${eng.reportRef} overall rating updated to ${reportRating}`
+            : `${eng.reportRef} report status updated to ${newStatus}`,
+        };
+        const updated: AuditEngagement = {
+          ...eng,
+          reportStatus: newStatus,
+          executiveSummary,
+          ...(reportRating !== undefined ? { reportRating } : {}),
+          activityLog: [logEntry, ...eng.activityLog],
+        };
+        upsertEngagement(updated);
+        insertActivityLog(engagementId, logEntry);
+        return updated;
+      })
+    );
+  };
+
+  const handleUpdateEngagementStatus = (engagementId: string, status: string) => {
+    setEngagements((prev) =>
+      prev.map((eng) => {
+        if (eng.id !== engagementId || eng.status === status) return eng;
+        if (!canTransitionEngagementStatus(
+          eng.status as EngagementStatus,
+          status as EngagementStatus
+        )) {
+          console.warn(`Invalid engagement status transition: ${eng.status} -> ${status}`);
+          return eng;
+        }
+        const logEntry = {
+          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
+          timestamp: new Date().toLocaleString('en-GB'),
+          actor: currentUser?.name ?? '',
+          action: `${eng.ref} audit status changed to ${status}`,
+        };
+        const updated = {
+          ...eng,
+          status,
+          modifiedBy: getCurrentAccountEmail(),
+          modifiedAt: new Date().toISOString(),
+          activityLog: [logEntry, ...eng.activityLog],
+        };
+        upsertEngagement(updated);
+        insertActivityLog(engagementId, logEntry);
+        return updated;
+      })
+    );
+  };
+
+  const handleAutoAssignLeads = () => {
+    const leads = ['A. Villanueva', 'P. Mendoza', 'J. Reyes', 'K. Lim', 'B. Tolentino'];
+    setEngagements((prev) =>
+      prev.map((eng, idx) => {
+        if (eng.status !== 'Planned') return eng;
+        const updated = { ...eng, lead: leads[idx % leads.length] };
+        upsertEngagement(updated);
+        return updated;
+      })
+    );
+  };
+
+  const handleDraftFromUniverse = () => {
+    const exists = engagements.some((e) => e.ref === 'AUD-2026-011');
+    if (exists) return;
+    const drafted: AuditEngagement = {
+      id: formatYearIdentifier('AE', 2026, 11).toLowerCase(),
+      ref: formatYearIdentifier('AE', 2026, 11),
+      year: 2026,
+      title: 'Fixed Assets & Head Office Procurement Audit',
+      category: 'Operations',
+      department: 'Administrative Services',
+      entityName: 'Fixed assets & Head Office procurement',
+      likelihood: 3,
+      impact: 4,
+      riskScore: 12,
+      riskLevel: 'High',
+      lead: 'K. Lim',
+      headReviewer: 'M. Santos',
+      independentReviewer: 'A. Villanueva',
+      startDate: '23 Nov',
+      endDate: '29 Dec 2026',
+      durationDays: 25,
+      budgetedHours: 200,
+      status: 'Planned',
+      readyRatio: '1/9 ready',
+      lifecycleStage: 1,
+      fieldworkPct: 0,
+      fieldworkDayCurrent: 0,
+      fieldworkDayTotal: 25,
+      reportStatus: 'Draft',
+      reportRef: 'IA-2026-011-RPT',
+      executiveSummary: 'Drafted automatically from the Audit Universe based on risk cycle.',
+      workingNotes: [],
+      findings: [],
+      timelineActivities: [],
+      files: [],
+      activityLog: [],
+    };
+    upsertEngagement(drafted);
+    setEngagements((prev) => [...prev, drafted]);
+  };
+
+  const handleSaveFrequencies = (freq: AuditFrequencies) => {
+    setFrequenciesState(freq);
+    saveFrequencies(freq);
+  };
+
+  const handleSaveAuditDivisionRiskScales = async (scales: AuditDivisionRiskScale[]) => {
+    const retainedIds = new Set(scales.map((scale) => scale.id));
+    const removedIds = auditDivisionRiskScales
+      .filter((scale) => !retainedIds.has(scale.id))
+      .map((scale) => scale.id);
+    const inUse = [...universe, ...engagements].some((record) =>
+      record.auditDivisionId && removedIds.includes(record.auditDivisionId)
+    );
+    if (inUse) {
+      throw new Error('An audit division assigned to an Audit Universe entity or engagement cannot be removed.');
+    }
+    const scaleSettings: (keyof AuditDivisionRiskScale)[] = [
+      'highMinScore',
+      'mediumMinScore',
+      'highCycleMonths',
+      'mediumCycleMonths',
+      'lowCycleMonths',
+      'highFieldworkWeeks',
+      'mediumFieldworkWeeks',
+      'lowFieldworkWeeks',
+    ];
+    const changedScaleIds = new Set(
+      scales
+        .filter((scale) => {
+          const previous = auditDivisionRiskScales.find((item) => item.id === scale.id);
+          return previous && scaleSettings.some((key) => previous[key] !== scale[key]);
+        })
+        .map((scale) => scale.id)
+    );
+    await saveAuditDivisionRiskScales(scales, authSession?.token);
+    const modifiedBy = getCurrentAccountEmail();
+    const modifiedAt = new Date().toISOString();
+    const updatedUniverse = universe.map((entity) => {
+      if (!entity.auditDivisionId || !changedScaleIds.has(entity.auditDivisionId)) return entity;
+      const riskLevel = getAuditRiskLevel(entity.riskScore, entity.auditDivisionId, scales);
+      const cycleMonths = getAuditCycleMonths(riskLevel, entity.auditDivisionId, scales, frequencies);
+      const lastAuditDate = new Date(entity.lastAudited);
+      const nextDue = Number.isNaN(lastAuditDate.getTime())
+        ? entity.nextDue
+        : (() => {
+            lastAuditDate.setMonth(lastAuditDate.getMonth() + cycleMonths);
+            return lastAuditDate.toLocaleDateString('en-GB', {
+              day: 'numeric',
+              month: 'short',
+              year: 'numeric',
+            });
+          })();
+      const updated = { ...entity, riskLevel, cycleMonths, nextDue, modifiedBy, modifiedAt };
+      upsertUniverseEntity(updated);
+      return updated;
+    });
+    const updatedEngagements = engagements.map((engagement) => {
+      if (!engagement.auditDivisionId || !changedScaleIds.has(engagement.auditDivisionId)) return engagement;
+      const riskLevel = getAuditRiskLevel(engagement.riskScore, engagement.auditDivisionId, scales);
+      const fieldworkWeeks = getAuditFieldworkWeeks(
+        riskLevel,
+        engagement.auditDivisionId,
+        scales
+      );
+      const updated = {
+        ...engagement,
+        riskLevel,
+        fieldworkDayTotal: fieldworkWeeks * 5,
+        modifiedBy,
+        modifiedAt,
+      };
+      upsertEngagement(updated);
+      return updated;
+    });
+    setAuditDivisionRiskScales(scales);
+    setUniverse(updatedUniverse);
+    setEngagements(updatedEngagements);
+  };
+
+  const handleResetSystemForUAT = async () => {
+    await resetSystemToBaseline();
+    const resetChecklist = DEFAULT_SETUP_ITEMS.map((item) => ({
+      ...item,
+      status: 'To do' as const,
+      note: '',
+    }));
+    await saveMasterData('setup_checklist', resetChecklist);
+    window.location.reload();
+  };
+
+  // ── Auth gates ────────────────────────────────────────────────────────────
+
+  if (fatalError) {
+    throw fatalError;
+  }
+
+  if (!authReady) {
+    return (
+      <div className="min-h-screen bg-[#E8E2F4] flex items-center justify-center">
+        <div className="text-slate-500 text-sm animate-pulse">Loading…</div>
+      </div>
+    );
+  }
+
+  if (!authSession) {
+    return <LoginPage onLoginSuccess={handleLoginSuccess} initialError={authError} />;
+  }
+
+  if (authSession.requiresPasswordChange) {
+    return (
+      <ForcePasswordChange
+        session={authSession}
+        onChanged={handlePasswordChanged}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
+  if (dataLoading) {
+    return (
+      <div className="min-h-screen bg-[#E8E2F4] flex items-center justify-center">
+        <div className="text-slate-500 text-sm animate-pulse">Loading data…</div>
+      </div>
+    );
+  }
+
+  const accessRole = currentUser?.headerSubtitle || currentUser?.roleTitle || '';
+  const canImportTab = (tab: MainTabId) =>
+    authSession.role === 'admin' ||
+    canAccessTab(accessRole, tab, accessActive, permissionMatrix).allowed;
+  const bulkImportTargets: BulkImportTarget[] = [
+    ...(canImportTab('universe') ? ['universe' as const] : []),
+    ...(authSession.role === 'admin' ? ['profiles' as const] : []),
+    ...(canImportTab('annual-plan') ? ['annual_plan' as const] : []),
+    ...(canImportTab('fieldwork') ? ['working_notes' as const, 'findings' as const] : []),
+    ...(canImportTab('issues') ? ['issues' as const] : []),
+  ];
+
+  // ── Authenticated app ─────────────────────────────────────────────────────
+  return (
+    <div className="min-h-screen bg-[#E8E2F4] text-slate-900 pb-16">
+      {/* Admin user management modal */}
+      {showAdminPanel && authSession.role === 'admin' && (
+        <AdminUserManagement
+          session={authSession}
+          onClose={() => setShowAdminPanel(false)}
+        />
+      )}
+      {showBulkImport && bulkImportTargets.length > 0 && (
+        <BulkImportModal
+          targets={bulkImportTargets}
+          universe={universe}
+          engagements={engagements}
+          userProfiles={userProfiles}
+          issues={issues}
+          riskScales={auditDivisionRiskScales}
+          currentUser={currentUser ?? FALLBACK_USER}
+          onImport={handleBulkImport}
+          onClose={() => setShowBulkImport(false)}
+        />
+      )}
+
+      <HeaderAndLifecycle
+        activeTab={activeTab}
+        onSelectTab={handleSelectTab}
+        activeLifecycleStage={activeLifecycleStage}
+        activeSubTab={activeSubTab}
+        maxCompletedStage={
+          selectedEngagement
+            ? Math.max(selectedEngagement.lifecycleStage - 1, activeLifecycleStage - 1)
+            : activeLifecycleStage - 1
+        }
+        onSelectLifecycleStage={handleSelectLifecycleStage}
+        currentUser={currentUser ?? FALLBACK_USER}
+        onChangeUser={setCurrentUser}
+        userProfiles={roleSimulationProfiles}
+        permissionMatrix={permissionMatrix}
+        canSimulateAccess={authSession.role === 'admin' && accessMode !== 'enforced'}
+        accessActive={accessActive}
+        accessMode={accessMode}
+        onChangeAccessMode={(mode) => {
+          if (authSession.role !== 'admin') return;
+          setAndPersistAccessMode(mode);
+        }}
+        onToggleAccess={() => {
+          if (authSession.role === 'admin') {
+            setAndPersistAccessMode(accessMode === 'enforced' ? 'simulated' : 'enforced');
+          }
+        }}
+        selectedEngagement={activeTab === 'fieldwork' ? selectedEngagement : null}
+        onAdvanceEngagementStage={handleAdvanceEngagementStage}
+        authSession={authSession}
+        onLogout={handleLogout}
+        onOpenAdminPanel={() => setShowAdminPanel(true)}
+        onResetSystemForUAT={handleResetSystemForUAT}
+      />
+
+      <main className="w-full max-w-[1220px] mx-auto px-4 sm:px-6 mt-2">
+        {bulkImportTargets.length > 0 && (
+          <div className="mb-3 flex justify-end">
+            <button type="button" onClick={() => setShowBulkImport(true)}
+              className="rounded-md border border-[#492785] bg-white px-3.5 py-2 text-xs font-semibold text-[#492785] hover:bg-purple-50">
+              Bulk import
+            </button>
+          </div>
+        )}
+        {(() => {
+          const tabCheck = canAccessTab(
+            currentUser?.headerSubtitle || currentUser?.roleTitle,
+            activeTab,
+            accessActive,
+            permissionMatrix
+          );
+          const fieldworkCapability = activeTab === 'fieldwork'
+            ? ({
+              dashboard: activeLifecycleStage === 2
+                ? 'Stage 02 Notification & Kickoff Memo'
+                : 'Stage 03 Working Papers — Prepare & Submit',
+                'working-notes': 'Stage 03 Working Papers — Prepare & Submit',
+                findings: 'Stage 03 Working Papers — Prepare & Submit',
+                review: 'Stage 03 Tier 1 Independent Quality Review',
+                auditee: 'Stage 04 Exit Conference & Management Responses',
+                files: 'Stage 03 Working Papers — Prepare & Submit',
+                report: 'Stage 05 Final Audit Report Issuance',
+                'audit-trail': 'Stage 03 Working Papers — Prepare & Submit',
+              } satisfies Record<EngagementSubTabId, string>)[activeSubTab]
+            : undefined;
+          const fieldworkCheck = fieldworkCapability && accessActive &&
+            !hasMatrixCapability(
+              currentUser?.headerSubtitle || currentUser?.roleTitle,
+              fieldworkCapability,
+              permissionMatrix
+            )
+            ? {
+                allowed: false,
+                reason: `Your role does not have permission for "${fieldworkCapability}" in the active role permission matrix.`,
+                requiredRole: 'A role granted this capability in the permission matrix',
+              }
+            : undefined;
+          const accessCheck = !tabCheck.allowed ? tabCheck : fieldworkCheck ?? tabCheck;
+
+          if (!accessCheck.allowed) {
+            const tabNames: Record<MainTabId, string> = {
+              overview: 'Overview',
+              universe: 'Audit Universe',
+              'annual-plan': 'Annual Audit Plan',
+              timeline: 'Timeline & Milestones',
+              fieldwork: 'Fieldwork',
+              issues: 'Issues & Remediation',
+              'master-data': 'Master Data Configuration',
+              settings: 'System Settings',
+              setup: 'Setup Checklist',
+              access: 'User Accounts & Access Control',
+            };
+
+            return (
+              <AccessGuard
+                tabName={tabNames[activeTab] || activeTab}
+                tabId={activeTab}
+                currentUser={currentUser ?? FALLBACK_USER}
+                reason={accessCheck.reason}
+                requiredRole={accessCheck.requiredRole}
+                onGoToOverview={() => handleSelectTab('overview')}
+                onSwitchRole={authSession.role === 'admin' ? () => {
+                  const profiles = roleSimulationProfiles;
+                  const currentIdx = profiles.findIndex((u) => u.id === currentUser?.id);
+                  const nextUser = profiles[(currentIdx + 1) % profiles.length];
+                  if (nextUser) setCurrentUser(nextUser);
+                } : undefined}
+                onBypassSimulation={authSession.role === 'admin' ? () => setAndPersistAccessMode('off') : undefined}
+              />
+            );
+          }
+
+          return (
+            <>
+              {activeTab === 'overview' && (
+                <OverviewView
+                  engagements={engagements}
+                  universe={universe}
+                  issues={issues}
+                  onSelectLifecycleStage={handleSelectLifecycleStage}
+                  onOpenEngagement={handleSelectEngagement}
+                  onSelectTab={handleSelectTab}
+                />
+              )}
+
+              {activeTab === 'universe' && (
+                <AuditUniverseView
+                  universe={universe}
+                  universeRecords={universe.map((u) => ({
+                    id: u.id,
+                    code: u.code,
+                    name: u.name,
+                    subtitle: u.division || u.category,
+                    type: (u.category as UniverseRecord['type']) || 'Process',
+                    auditDivisionId: u.auditDivisionId,
+                    owner: u.defaultLead || 'Internal Audit',
+                    likelihood: u.likelihood,
+                    impact: u.impact,
+                    riskScore: u.riskScore,
+                    riskLevel: u.riskLevel,
+                    cycleMonths: u.cycleMonths,
+                    riskNotes: u.riskNotes,
+                    lastAudit: u.lastAudited || '—',
+                    nextDue: u.nextDue || '—',
+                    nextDueStatus: (u.nextDue && u.nextDue.toLowerCase().includes('overdue')
+                      ? 'Overdue'
+                      : 'On track') as 'Overdue' | 'Due soon' | 'On track',
+                    addedBy: u.addedBy,
+                    modifiedBy: u.modifiedBy,
+                    modifiedAt: u.modifiedAt,
+                  }))}
+                  frequencies={frequencies}
+                  auditDivisionRiskScales={auditDivisionRiskScales}
+                  isReauditMode={activeLifecycleStage === 7}
+                  onAddUniverseEntity={handleAddUniverseEntity}
+                  onUpdateUniverseEntity={handleUpdateUniverseEntity}
+                  onDeleteUniverseEntity={handleDeleteUniverseEntity}
+                  onSyncFromSupabase={authSession.role === 'admin' ? handleSyncUniverseFromSupabase : undefined}
+                />
+              )}
+
+              {activeTab === 'annual-plan' && (
+                <AnnualPlanView
+                  engagements={engagements}
+                  universe={universe}
+                  userProfiles={userProfiles}
+                  auditDivisionRiskScales={auditDivisionRiskScales}
+                  onSelectEngagement={handleSelectEngagement}
+                  onAddEngagement={(newEng) => {
+                    upsertEngagement(newEng);
+                    setEngagements((prev) => [newEng, ...prev]);
+                  }}
+                  onUpdateEngagement={handleUpdateEngagement}
+                  onUpdateEngagementStatus={handleUpdateEngagementStatus}
+                  onAutoAssignLeads={handleAutoAssignLeads}
+                  onDraftFromUniverse={handleDraftFromUniverse}
+                />
+              )}
+
+              {activeTab === 'timeline' && (
+                <TimelineView
+                  engagements={engagements}
+                  onOpenEngagement={handleSelectEngagement}
+                />
+              )}
+
+              {activeTab === 'fieldwork' && (
+                <FieldworkView
+                  engagements={engagements}
+                  selectedEngagement={selectedEngagement}
+                  onSelectEngagement={handleSelectEngagement}
+                  activeSubTab={activeSubTab}
+                  onSelectSubTab={handleSelectSubTab}
+                  currentUser={currentUser ?? FALLBACK_USER}
+                  onChangeUser={setCurrentUser}
+                  canSimulateRole={authSession.role === 'admin' && accessMode !== 'enforced'}
+                  userProfiles={roleSimulationProfiles}
+                  accessActive={accessActive}
+                  onApproveWorkingNote={handleApproveWorkingNote}
+                  onCompleteActivity={handleCompleteActivity}
+                  onAddWorkingNote={handleAddWorkingNote}
+                  onAddFinding={handleAddFinding}
+                  onUpdateFindingStatus={handleUpdateFindingStatus}
+                  onUploadFile={handleUploadFile}
+                  onUpdateReport={handleUpdateReport}
+                  onAdvanceEngagementStage={handleAdvanceEngagementStage}
+                />
+              )}
+
+              {activeTab === 'issues' && (
+                <IssuesView
+                  engagements={engagements}
+                  issues={issues}
+                  onUpdateIssue={handleUpdateIssue}
+                  activeLifecycleStage={activeLifecycleStage}
+                  onValidateAndCloseFinding={handleValidateAndCloseFinding}
+                />
+              )}
+
+              {activeTab === 'settings' && (
+                <SettingsView
+                  frequencies={frequencies}
+                  onSaveFrequencies={handleSaveFrequencies}
+                  auditDivisionRiskScales={auditDivisionRiskScales}
+                  assignedAuditDivisionIds={[
+                    ...universe.map((entity) => entity.auditDivisionId),
+                    ...engagements.map((engagement) => engagement.auditDivisionId),
+                  ].filter((id): id is string => Boolean(id))}
+                  onSaveAuditDivisionRiskScales={handleSaveAuditDivisionRiskScales}
+                  onSaveSizing={handleSaveSizing}
+                  onResetSystemForUAT={handleResetSystemForUAT}
+                />
+              )}
+
+              {(activeTab === 'master-data' ||
+                activeTab === 'setup' ||
+                activeTab === 'access') && (
+                <MasterDataSetupAccessView
+                  tab={activeTab}
+                  currentUser={currentUser ?? FALLBACK_USER}
+                  onChangeUser={setCurrentUser}
+                  userProfiles={userProfiles}
+                  canSimulateAccess={authSession.role === 'admin'}
+                  accessActive={accessActive}
+                  onToggleAccess={() => {
+                    if (authSession.role === 'admin') {
+                      setAndPersistAccessMode(accessMode === 'enforced' ? 'simulated' : 'enforced');
+                    }
+                  }}
+                  onSelectTab={handleSelectTab}
+                  onAddUserProfile={handleAddUserProfile}
+                  onUpdateUserProfile={handleUpdateUserProfile}
+                  onDeleteUserProfile={handleDeleteUserProfile}
+                  onResetSystemForUAT={handleResetSystemForUAT}
+                  onRolePermissionMatrixChange={setPermissionMatrix}
+                  universe={universe}
+                  onUpdateUniverseEntity={handleUpdateUniverseEntity}
+                />
+              )}
+            </>
+          );
+        })()}
+      </main>
+    </div>
+  );
+}
