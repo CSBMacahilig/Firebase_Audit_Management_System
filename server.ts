@@ -435,6 +435,12 @@ async function startServer() {
     }
   );
 
+  app.use('/api', (req, res) => {
+    res.status(404).json({
+      error: `API route not found: ${req.method} ${req.originalUrl}`,
+    });
+  });
+
   let viteInitError: unknown = null;
   if (process.env.NODE_ENV !== 'production') {
     const viteReadyPromise = import('vite')
