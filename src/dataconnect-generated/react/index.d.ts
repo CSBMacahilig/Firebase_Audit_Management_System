@@ -1,0 +1,96 @@
+import { UpsertUserProfileData, UpsertUserProfileVariables, DeleteUserProfileData, DeleteUserProfileVariables, UpsertSystemUserData, UpsertSystemUserVariables, DeleteSystemUserData, DeleteSystemUserVariables, UpsertEngagementData, UpsertEngagementVariables, DeleteEngagementData, DeleteEngagementVariables, UpsertWorkingNoteData, UpsertWorkingNoteVariables, DeleteWorkingNoteData, DeleteWorkingNoteVariables, UpsertFindingData, UpsertFindingVariables, DeleteFindingData, DeleteFindingVariables, UpsertTimelineActivityData, UpsertTimelineActivityVariables, DeleteTimelineActivityData, DeleteTimelineActivityVariables, UpsertEngagementFileData, UpsertEngagementFileVariables, DeleteEngagementFileData, DeleteEngagementFileVariables, UpsertActivityLogData, UpsertActivityLogVariables, DeleteActivityLogData, DeleteActivityLogVariables, UpsertIssueRegisterData, UpsertIssueRegisterVariables, DeleteIssueRegisterData, DeleteIssueRegisterVariables, UpsertUniverseEntityData, UpsertUniverseEntityVariables, DeleteUniverseEntityData, DeleteUniverseEntityVariables, UpsertSizingConfigData, UpsertSizingConfigVariables, DeleteSizingConfigData, DeleteSizingConfigVariables, UpsertAuditFrequencyData, UpsertAuditFrequencyVariables, DeleteAuditFrequencyData, DeleteAuditFrequencyVariables, UpsertMasterDataData, UpsertMasterDataVariables, DeleteMasterDataData, DeleteMasterDataVariables, UpsertAuditDivisionRiskScaleData, UpsertAuditDivisionRiskScaleVariables, DeleteAuditDivisionRiskScaleData, DeleteAuditDivisionRiskScaleVariables, UpsertAppSessionData, UpsertAppSessionVariables, DeleteAppSessionData, DeleteAppSessionVariables } from '../';
+import { UseDataConnectMutationResult, useDataConnectMutationOptions} from '@tanstack-query-firebase/react/data-connect';
+import { UseMutationResult} from '@tanstack/react-query';
+import { DataConnect } from 'firebase/data-connect';
+import { FirebaseError } from 'firebase/app';
+
+
+export function useUpsertUserProfile(options?: useDataConnectMutationOptions<UpsertUserProfileData, FirebaseError, UpsertUserProfileVariables>): UseDataConnectMutationResult<UpsertUserProfileData, UpsertUserProfileVariables>;
+export function useUpsertUserProfile(dc: DataConnect, options?: useDataConnectMutationOptions<UpsertUserProfileData, FirebaseError, UpsertUserProfileVariables>): UseDataConnectMutationResult<UpsertUserProfileData, UpsertUserProfileVariables>;
+
+export function useDeleteUserProfile(options?: useDataConnectMutationOptions<DeleteUserProfileData, FirebaseError, DeleteUserProfileVariables>): UseDataConnectMutationResult<DeleteUserProfileData, DeleteUserProfileVariables>;
+export function useDeleteUserProfile(dc: DataConnect, options?: useDataConnectMutationOptions<DeleteUserProfileData, FirebaseError, DeleteUserProfileVariables>): UseDataConnectMutationResult<DeleteUserProfileData, DeleteUserProfileVariables>;
+
+export function useUpsertSystemUser(options?: useDataConnectMutationOptions<UpsertSystemUserData, FirebaseError, UpsertSystemUserVariables>): UseDataConnectMutationResult<UpsertSystemUserData, UpsertSystemUserVariables>;
+export function useUpsertSystemUser(dc: DataConnect, options?: useDataConnectMutationOptions<UpsertSystemUserData, FirebaseError, UpsertSystemUserVariables>): UseDataConnectMutationResult<UpsertSystemUserData, UpsertSystemUserVariables>;
+
+export function useDeleteSystemUser(options?: useDataConnectMutationOptions<DeleteSystemUserData, FirebaseError, DeleteSystemUserVariables>): UseDataConnectMutationResult<DeleteSystemUserData, DeleteSystemUserVariables>;
+export function useDeleteSystemUser(dc: DataConnect, options?: useDataConnectMutationOptions<DeleteSystemUserData, FirebaseError, DeleteSystemUserVariables>): UseDataConnectMutationResult<DeleteSystemUserData, DeleteSystemUserVariables>;
+
+export function useUpsertEngagement(options?: useDataConnectMutationOptions<UpsertEngagementData, FirebaseError, UpsertEngagementVariables>): UseDataConnectMutationResult<UpsertEngagementData, UpsertEngagementVariables>;
+export function useUpsertEngagement(dc: DataConnect, options?: useDataConnectMutationOptions<UpsertEngagementData, FirebaseError, UpsertEngagementVariables>): UseDataConnectMutationResult<UpsertEngagementData, UpsertEngagementVariables>;
+
+export function useDeleteEngagement(options?: useDataConnectMutationOptions<DeleteEngagementData, FirebaseError, DeleteEngagementVariables>): UseDataConnectMutationResult<DeleteEngagementData, DeleteEngagementVariables>;
+export function useDeleteEngagement(dc: DataConnect, options?: useDataConnectMutationOptions<DeleteEngagementData, FirebaseError, DeleteEngagementVariables>): UseDataConnectMutationResult<DeleteEngagementData, DeleteEngagementVariables>;
+
+export function useUpsertWorkingNote(options?: useDataConnectMutationOptions<UpsertWorkingNoteData, FirebaseError, UpsertWorkingNoteVariables>): UseDataConnectMutationResult<UpsertWorkingNoteData, UpsertWorkingNoteVariables>;
+export function useUpsertWorkingNote(dc: DataConnect, options?: useDataConnectMutationOptions<UpsertWorkingNoteData, FirebaseError, UpsertWorkingNoteVariables>): UseDataConnectMutationResult<UpsertWorkingNoteData, UpsertWorkingNoteVariables>;
+
+export function useDeleteWorkingNote(options?: useDataConnectMutationOptions<DeleteWorkingNoteData, FirebaseError, DeleteWorkingNoteVariables>): UseDataConnectMutationResult<DeleteWorkingNoteData, DeleteWorkingNoteVariables>;
+export function useDeleteWorkingNote(dc: DataConnect, options?: useDataConnectMutationOptions<DeleteWorkingNoteData, FirebaseError, DeleteWorkingNoteVariables>): UseDataConnectMutationResult<DeleteWorkingNoteData, DeleteWorkingNoteVariables>;
+
+export function useUpsertFinding(options?: useDataConnectMutationOptions<UpsertFindingData, FirebaseError, UpsertFindingVariables>): UseDataConnectMutationResult<UpsertFindingData, UpsertFindingVariables>;
+export function useUpsertFinding(dc: DataConnect, options?: useDataConnectMutationOptions<UpsertFindingData, FirebaseError, UpsertFindingVariables>): UseDataConnectMutationResult<UpsertFindingData, UpsertFindingVariables>;
+
+export function useDeleteFinding(options?: useDataConnectMutationOptions<DeleteFindingData, FirebaseError, DeleteFindingVariables>): UseDataConnectMutationResult<DeleteFindingData, DeleteFindingVariables>;
+export function useDeleteFinding(dc: DataConnect, options?: useDataConnectMutationOptions<DeleteFindingData, FirebaseError, DeleteFindingVariables>): UseDataConnectMutationResult<DeleteFindingData, DeleteFindingVariables>;
+
+export function useUpsertTimelineActivity(options?: useDataConnectMutationOptions<UpsertTimelineActivityData, FirebaseError, UpsertTimelineActivityVariables>): UseDataConnectMutationResult<UpsertTimelineActivityData, UpsertTimelineActivityVariables>;
+export function useUpsertTimelineActivity(dc: DataConnect, options?: useDataConnectMutationOptions<UpsertTimelineActivityData, FirebaseError, UpsertTimelineActivityVariables>): UseDataConnectMutationResult<UpsertTimelineActivityData, UpsertTimelineActivityVariables>;
+
+export function useDeleteTimelineActivity(options?: useDataConnectMutationOptions<DeleteTimelineActivityData, FirebaseError, DeleteTimelineActivityVariables>): UseDataConnectMutationResult<DeleteTimelineActivityData, DeleteTimelineActivityVariables>;
+export function useDeleteTimelineActivity(dc: DataConnect, options?: useDataConnectMutationOptions<DeleteTimelineActivityData, FirebaseError, DeleteTimelineActivityVariables>): UseDataConnectMutationResult<DeleteTimelineActivityData, DeleteTimelineActivityVariables>;
+
+export function useUpsertEngagementFile(options?: useDataConnectMutationOptions<UpsertEngagementFileData, FirebaseError, UpsertEngagementFileVariables>): UseDataConnectMutationResult<UpsertEngagementFileData, UpsertEngagementFileVariables>;
+export function useUpsertEngagementFile(dc: DataConnect, options?: useDataConnectMutationOptions<UpsertEngagementFileData, FirebaseError, UpsertEngagementFileVariables>): UseDataConnectMutationResult<UpsertEngagementFileData, UpsertEngagementFileVariables>;
+
+export function useDeleteEngagementFile(options?: useDataConnectMutationOptions<DeleteEngagementFileData, FirebaseError, DeleteEngagementFileVariables>): UseDataConnectMutationResult<DeleteEngagementFileData, DeleteEngagementFileVariables>;
+export function useDeleteEngagementFile(dc: DataConnect, options?: useDataConnectMutationOptions<DeleteEngagementFileData, FirebaseError, DeleteEngagementFileVariables>): UseDataConnectMutationResult<DeleteEngagementFileData, DeleteEngagementFileVariables>;
+
+export function useUpsertActivityLog(options?: useDataConnectMutationOptions<UpsertActivityLogData, FirebaseError, UpsertActivityLogVariables>): UseDataConnectMutationResult<UpsertActivityLogData, UpsertActivityLogVariables>;
+export function useUpsertActivityLog(dc: DataConnect, options?: useDataConnectMutationOptions<UpsertActivityLogData, FirebaseError, UpsertActivityLogVariables>): UseDataConnectMutationResult<UpsertActivityLogData, UpsertActivityLogVariables>;
+
+export function useDeleteActivityLog(options?: useDataConnectMutationOptions<DeleteActivityLogData, FirebaseError, DeleteActivityLogVariables>): UseDataConnectMutationResult<DeleteActivityLogData, DeleteActivityLogVariables>;
+export function useDeleteActivityLog(dc: DataConnect, options?: useDataConnectMutationOptions<DeleteActivityLogData, FirebaseError, DeleteActivityLogVariables>): UseDataConnectMutationResult<DeleteActivityLogData, DeleteActivityLogVariables>;
+
+export function useUpsertIssueRegister(options?: useDataConnectMutationOptions<UpsertIssueRegisterData, FirebaseError, UpsertIssueRegisterVariables>): UseDataConnectMutationResult<UpsertIssueRegisterData, UpsertIssueRegisterVariables>;
+export function useUpsertIssueRegister(dc: DataConnect, options?: useDataConnectMutationOptions<UpsertIssueRegisterData, FirebaseError, UpsertIssueRegisterVariables>): UseDataConnectMutationResult<UpsertIssueRegisterData, UpsertIssueRegisterVariables>;
+
+export function useDeleteIssueRegister(options?: useDataConnectMutationOptions<DeleteIssueRegisterData, FirebaseError, DeleteIssueRegisterVariables>): UseDataConnectMutationResult<DeleteIssueRegisterData, DeleteIssueRegisterVariables>;
+export function useDeleteIssueRegister(dc: DataConnect, options?: useDataConnectMutationOptions<DeleteIssueRegisterData, FirebaseError, DeleteIssueRegisterVariables>): UseDataConnectMutationResult<DeleteIssueRegisterData, DeleteIssueRegisterVariables>;
+
+export function useUpsertUniverseEntity(options?: useDataConnectMutationOptions<UpsertUniverseEntityData, FirebaseError, UpsertUniverseEntityVariables>): UseDataConnectMutationResult<UpsertUniverseEntityData, UpsertUniverseEntityVariables>;
+export function useUpsertUniverseEntity(dc: DataConnect, options?: useDataConnectMutationOptions<UpsertUniverseEntityData, FirebaseError, UpsertUniverseEntityVariables>): UseDataConnectMutationResult<UpsertUniverseEntityData, UpsertUniverseEntityVariables>;
+
+export function useDeleteUniverseEntity(options?: useDataConnectMutationOptions<DeleteUniverseEntityData, FirebaseError, DeleteUniverseEntityVariables>): UseDataConnectMutationResult<DeleteUniverseEntityData, DeleteUniverseEntityVariables>;
+export function useDeleteUniverseEntity(dc: DataConnect, options?: useDataConnectMutationOptions<DeleteUniverseEntityData, FirebaseError, DeleteUniverseEntityVariables>): UseDataConnectMutationResult<DeleteUniverseEntityData, DeleteUniverseEntityVariables>;
+
+export function useUpsertSizingConfig(options?: useDataConnectMutationOptions<UpsertSizingConfigData, FirebaseError, UpsertSizingConfigVariables>): UseDataConnectMutationResult<UpsertSizingConfigData, UpsertSizingConfigVariables>;
+export function useUpsertSizingConfig(dc: DataConnect, options?: useDataConnectMutationOptions<UpsertSizingConfigData, FirebaseError, UpsertSizingConfigVariables>): UseDataConnectMutationResult<UpsertSizingConfigData, UpsertSizingConfigVariables>;
+
+export function useDeleteSizingConfig(options?: useDataConnectMutationOptions<DeleteSizingConfigData, FirebaseError, DeleteSizingConfigVariables>): UseDataConnectMutationResult<DeleteSizingConfigData, DeleteSizingConfigVariables>;
+export function useDeleteSizingConfig(dc: DataConnect, options?: useDataConnectMutationOptions<DeleteSizingConfigData, FirebaseError, DeleteSizingConfigVariables>): UseDataConnectMutationResult<DeleteSizingConfigData, DeleteSizingConfigVariables>;
+
+export function useUpsertAuditFrequency(options?: useDataConnectMutationOptions<UpsertAuditFrequencyData, FirebaseError, UpsertAuditFrequencyVariables>): UseDataConnectMutationResult<UpsertAuditFrequencyData, UpsertAuditFrequencyVariables>;
+export function useUpsertAuditFrequency(dc: DataConnect, options?: useDataConnectMutationOptions<UpsertAuditFrequencyData, FirebaseError, UpsertAuditFrequencyVariables>): UseDataConnectMutationResult<UpsertAuditFrequencyData, UpsertAuditFrequencyVariables>;
+
+export function useDeleteAuditFrequency(options?: useDataConnectMutationOptions<DeleteAuditFrequencyData, FirebaseError, DeleteAuditFrequencyVariables>): UseDataConnectMutationResult<DeleteAuditFrequencyData, DeleteAuditFrequencyVariables>;
+export function useDeleteAuditFrequency(dc: DataConnect, options?: useDataConnectMutationOptions<DeleteAuditFrequencyData, FirebaseError, DeleteAuditFrequencyVariables>): UseDataConnectMutationResult<DeleteAuditFrequencyData, DeleteAuditFrequencyVariables>;
+
+export function useUpsertMasterData(options?: useDataConnectMutationOptions<UpsertMasterDataData, FirebaseError, UpsertMasterDataVariables>): UseDataConnectMutationResult<UpsertMasterDataData, UpsertMasterDataVariables>;
+export function useUpsertMasterData(dc: DataConnect, options?: useDataConnectMutationOptions<UpsertMasterDataData, FirebaseError, UpsertMasterDataVariables>): UseDataConnectMutationResult<UpsertMasterDataData, UpsertMasterDataVariables>;
+
+export function useDeleteMasterData(options?: useDataConnectMutationOptions<DeleteMasterDataData, FirebaseError, DeleteMasterDataVariables>): UseDataConnectMutationResult<DeleteMasterDataData, DeleteMasterDataVariables>;
+export function useDeleteMasterData(dc: DataConnect, options?: useDataConnectMutationOptions<DeleteMasterDataData, FirebaseError, DeleteMasterDataVariables>): UseDataConnectMutationResult<DeleteMasterDataData, DeleteMasterDataVariables>;
+
+export function useUpsertAuditDivisionRiskScale(options?: useDataConnectMutationOptions<UpsertAuditDivisionRiskScaleData, FirebaseError, UpsertAuditDivisionRiskScaleVariables>): UseDataConnectMutationResult<UpsertAuditDivisionRiskScaleData, UpsertAuditDivisionRiskScaleVariables>;
+export function useUpsertAuditDivisionRiskScale(dc: DataConnect, options?: useDataConnectMutationOptions<UpsertAuditDivisionRiskScaleData, FirebaseError, UpsertAuditDivisionRiskScaleVariables>): UseDataConnectMutationResult<UpsertAuditDivisionRiskScaleData, UpsertAuditDivisionRiskScaleVariables>;
+
+export function useDeleteAuditDivisionRiskScale(options?: useDataConnectMutationOptions<DeleteAuditDivisionRiskScaleData, FirebaseError, DeleteAuditDivisionRiskScaleVariables>): UseDataConnectMutationResult<DeleteAuditDivisionRiskScaleData, DeleteAuditDivisionRiskScaleVariables>;
+export function useDeleteAuditDivisionRiskScale(dc: DataConnect, options?: useDataConnectMutationOptions<DeleteAuditDivisionRiskScaleData, FirebaseError, DeleteAuditDivisionRiskScaleVariables>): UseDataConnectMutationResult<DeleteAuditDivisionRiskScaleData, DeleteAuditDivisionRiskScaleVariables>;
+
+export function useUpsertAppSession(options?: useDataConnectMutationOptions<UpsertAppSessionData, FirebaseError, UpsertAppSessionVariables>): UseDataConnectMutationResult<UpsertAppSessionData, UpsertAppSessionVariables>;
+export function useUpsertAppSession(dc: DataConnect, options?: useDataConnectMutationOptions<UpsertAppSessionData, FirebaseError, UpsertAppSessionVariables>): UseDataConnectMutationResult<UpsertAppSessionData, UpsertAppSessionVariables>;
+
+export function useDeleteAppSession(options?: useDataConnectMutationOptions<DeleteAppSessionData, FirebaseError, DeleteAppSessionVariables>): UseDataConnectMutationResult<DeleteAppSessionData, DeleteAppSessionVariables>;
+export function useDeleteAppSession(dc: DataConnect, options?: useDataConnectMutationOptions<DeleteAppSessionData, FirebaseError, DeleteAppSessionVariables>): UseDataConnectMutationResult<DeleteAppSessionData, DeleteAppSessionVariables>;

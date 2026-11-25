@@ -1,0 +1,285 @@
+type UserProfile @table(name: "user_profiles") {
+  id: String!
+  name: String!
+  roleTitle: String! @col(name: "role_title")
+  fullLabel: String! @col(name: "full_label")
+  headerSubtitle: String! @col(name: "header_subtitle")
+  department: String!
+  canApproveHead: Boolean! @col(name: "can_approve_head")
+  canApproveIndependent: Boolean! @col(name: "can_approve_independent")
+  canApproveCae: Boolean! @col(name: "can_approve_cae")
+  employeeNumber: String @col(name: "employee_number")
+  lastLoginDate: Timestamp @col(name: "last_login_date")
+  accountModifiedAt: Timestamp @col(name: "account_modified_at")
+  accountStatus: String! @col(name: "account_status")
+  failedLoginCount: Int! @col(name: "failed_login_count")
+  isLocked: Boolean! @col(name: "is_locked")
+  requiresPasswordChange: Boolean! @col(name: "requires_password_change")
+  passwordLastChanged: Timestamp @col(name: "password_last_changed")
+  passwordHistory: [String!]! @col(name: "password_history")
+  mfaEnabled: Boolean! @col(name: "mfa_enabled")
+  isPrivileged: Boolean! @col(name: "is_privileged")
+  createdAt: Timestamp! @col(name: "created_at")
+  updatedAt: Timestamp! @col(name: "updated_at")
+  addedBy: String @col(name: "added_by")
+  modifiedBy: String @col(name: "modified_by")
+  modifiedAt: Timestamp @col(name: "modified_at")
+}
+
+type SystemUser @table(name: "system_users") {
+  id: String!
+  username: String! @unique
+  fullName: String! @col(name: "full_name")
+  email: String!
+  role: String!
+  passwordHash: String! @col(name: "password_hash")
+  isActive: Boolean! @col(name: "is_active")
+  isLocked: Boolean! @col(name: "is_locked")
+  failedLoginCount: Int! @col(name: "failed_login_count")
+  requiresPasswordChange: Boolean! @col(name: "requires_password_change")
+  createdAt: Timestamp! @col(name: "created_at")
+  lastLogin: Timestamp @col(name: "last_login")
+  modifiedAt: Timestamp! @col(name: "modified_at")
+  addedBy: String @col(name: "added_by")
+  modifiedBy: String @col(name: "modified_by")
+}
+
+type Engagement @table(name: "engagements") {
+  id: String!
+  ref: String! @unique
+  year: Int!
+  title: String!
+  category: String!
+  department: String!
+  entityName: String! @col(name: "entity_name")
+  likelihood: Int!
+  impact: Int!
+  riskScore: Int! @col(name: "risk_score")
+  riskLevel: String! @col(name: "risk_level")
+  lead: String!
+  headReviewer: String! @col(name: "head_reviewer")
+  independentReviewer: String! @col(name: "independent_reviewer")
+  startDate: String! @col(name: "start_date")
+  endDate: String! @col(name: "end_date")
+  durationDays: Int! @col(name: "duration_days")
+  budgetedHours: Int! @col(name: "budgeted_hours")
+  status: String!
+  readyRatio: String! @col(name: "ready_ratio")
+  lifecycleStage: Int! @col(name: "lifecycle_stage")
+  fieldworkPct: Int! @col(name: "fieldwork_pct")
+  fieldworkDayCurrent: Int! @col(name: "fieldwork_day_current")
+  fieldworkDayTotal: Int! @col(name: "fieldwork_day_total")
+  reportStatus: String! @col(name: "report_status")
+  reportRef: String! @col(name: "report_ref")
+  executiveSummary: String! @col(name: "executive_summary")
+  createdAt: Timestamp! @col(name: "created_at")
+  updatedAt: Timestamp! @col(name: "updated_at")
+  reportRating: String @col(name: "report_rating")
+  addedBy: String @col(name: "added_by")
+  modifiedBy: String @col(name: "modified_by")
+  modifiedAt: Timestamp @col(name: "modified_at")
+  auditDivisionId: String @col(name: "audit_division_id")
+  objectives: String!
+  scope: String!
+  criteria: String!
+  addresseeName: String! @col(name: "addressee_name")
+  addresseeTitle: String! @col(name: "addressee_title")
+  copyFurnished: String! @col(name: "copy_furnished")
+}
+
+type WorkingNote @table(name: "working_notes") {
+  id: String!
+  engagementId: String! @col(name: "engagement_id")
+  ref: String!
+  title: String!
+  controlArea: String! @col(name: "control_area")
+  author: String!
+  status: String!
+  hasException: Boolean! @col(name: "has_exception")
+  updatedAt: String! @col(name: "updated_at")
+  testingProcedure: String! @col(name: "testing_procedure")
+  conclusion: String!
+  reviewerComments: String @col(name: "reviewer_comments")
+  createdAt: Timestamp! @col(name: "created_at")
+  addedBy: String @col(name: "added_by")
+  modifiedBy: String @col(name: "modified_by")
+  modifiedAt: Timestamp @col(name: "modified_at")
+  observations: String!
+}
+
+type Finding @table(name: "findings") {
+  id: String!
+  engagementId: String! @col(name: "engagement_id")
+  ref: String!
+  title: String!
+  severity: String!
+  condition: String!
+  criteria: String!
+  cause: String!
+  effect: String!
+  recommendation: String!
+  owner: String!
+  targetDate: String! @col(name: "target_date")
+  status: String!
+  linkedNoteRef: String! @col(name: "linked_note_ref")
+  createdAt: Timestamp! @col(name: "created_at")
+  addedBy: String @col(name: "added_by")
+  modifiedBy: String @col(name: "modified_by")
+  modifiedAt: Timestamp @col(name: "modified_at")
+  category: String!
+}
+
+type TimelineActivity @table(name: "timeline_activities") {
+  id: String!
+  engagementId: String! @col(name: "engagement_id")
+  name: String!
+  roleResponsible: String! @col(name: "role_responsible")
+  dueDate: String! @col(name: "due_date")
+  completedDate: String @col(name: "completed_date")
+  status: String!
+  stageId: Int! @col(name: "stage_id")
+  createdAt: Timestamp! @col(name: "created_at")
+  addedBy: String @col(name: "added_by")
+  modifiedBy: String @col(name: "modified_by")
+  modifiedAt: Timestamp @col(name: "modified_at")
+}
+
+type EngagementFile @table(name: "engagement_files") {
+  id: String!
+  engagementId: String! @col(name: "engagement_id")
+  name: String!
+  folder: String!
+  size: String!
+  uploadedBy: String! @col(name: "uploaded_by")
+  uploadedAt: String! @col(name: "uploaded_at")
+  createdAt: Timestamp! @col(name: "created_at")
+  addedBy: String @col(name: "added_by")
+  modifiedBy: String @col(name: "modified_by")
+  modifiedAt: Timestamp @col(name: "modified_at")
+}
+
+type ActivityLog @table(name: "activity_logs") {
+  id: String!
+  engagementId: String! @col(name: "engagement_id")
+  timestamp: String!
+  actor: String!
+  action: String!
+  detail: String
+  createdAt: Timestamp! @col(name: "created_at")
+  addedBy: String @col(name: "added_by")
+  modifiedBy: String @col(name: "modified_by")
+  modifiedAt: Timestamp @col(name: "modified_at")
+}
+
+type IssueRegister @table(name: "issues_register") {
+  id: String!
+  ref: String! @unique
+  title: String!
+  auditRef: String! @col(name: "audit_ref")
+  auditTitle: String! @col(name: "audit_title")
+  severity: String!
+  owner: String!
+  ownerUnit: String! @col(name: "owner_unit")
+  originalDue: String! @col(name: "original_due")
+  currentDue: String! @col(name: "current_due")
+  extensionCount: Int! @col(name: "extension_count")
+  daysStatus: String! @col(name: "days_status")
+  isOverdue: Boolean! @col(name: "is_overdue")
+  isDueSoon: Boolean! @col(name: "is_due_soon")
+  status: String!
+  actionPlanSummary: String! @col(name: "action_plan_summary")
+  evidenceNote: String @col(name: "evidence_note")
+  createdAt: Timestamp! @col(name: "created_at")
+  updatedAt: Timestamp! @col(name: "updated_at")
+  addedBy: String @col(name: "added_by")
+  modifiedBy: String @col(name: "modified_by")
+  modifiedAt: Timestamp @col(name: "modified_at")
+  extensionReason: String! @col(name: "extension_reason")
+}
+
+type UniverseEntity @table(name: "universe_entities") {
+  id: String!
+  code: String! @unique
+  name: String!
+  division: String!
+  category: String!
+  likelihood: Int!
+  impact: Int!
+  riskScore: Int! @col(name: "risk_score")
+  riskLevel: String! @col(name: "risk_level")
+  lastAudited: String! @col(name: "last_audited")
+  nextDue: String! @col(name: "next_due")
+  cycleMonths: Int! @col(name: "cycle_months")
+  defaultLead: String! @col(name: "default_lead")
+  createdAt: Timestamp! @col(name: "created_at")
+  updatedAt: Timestamp! @col(name: "updated_at")
+  addedBy: String @col(name: "added_by")
+  modifiedBy: String @col(name: "modified_by")
+  modifiedAt: Timestamp @col(name: "modified_at")
+  auditDivisionId: String @col(name: "audit_division_id")
+  riskNotes: String! @col(name: "risk_notes")
+}
+
+type SizingConfig @table(name: "sizing_configs") {
+  id: String!
+  sizeName: String! @col(name: "size_name")
+  code: String! @unique
+  workingDays: Int! @col(name: "working_days")
+  calendarSpan: String! @col(name: "calendar_span")
+  auditors: Int!
+  hoursPerDay: Int! @col(name: "hours_per_day")
+  budgetedHours: Int! @col(name: "budgeted_hours")
+  typicalUse: String! @col(name: "typical_use")
+  createdAt: Timestamp! @col(name: "created_at")
+  updatedAt: Timestamp! @col(name: "updated_at")
+  addedBy: String @col(name: "added_by")
+  modifiedBy: String @col(name: "modified_by")
+  modifiedAt: Timestamp @col(name: "modified_at")
+}
+
+type AuditFrequency @table(name: "audit_frequencies") {
+  id: String!
+  high: Int!
+  medium: Int!
+  low: Int!
+  updatedAt: Timestamp! @col(name: "updated_at")
+  addedBy: String @col(name: "added_by")
+  modifiedBy: String @col(name: "modified_by")
+  modifiedAt: Timestamp @col(name: "modified_at")
+}
+
+type MasterData @table(name: "master_data") {
+  id: String!
+  data: Any!
+  createdAt: Timestamp! @col(name: "created_at")
+  updatedAt: Timestamp! @col(name: "updated_at")
+  addedBy: String @col(name: "added_by")
+  modifiedBy: String @col(name: "modified_by")
+  modifiedAt: Timestamp @col(name: "modified_at")
+}
+
+type AuditDivisionRiskScale @table(name: "audit_division_risk_scales") {
+  id: String!
+  name: String! @unique
+  highMinScore: Float! @col(name: "high_min_score")
+  mediumMinScore: Float! @col(name: "medium_min_score")
+  highCycleMonths: Int! @col(name: "high_cycle_months")
+  mediumCycleMonths: Int! @col(name: "medium_cycle_months")
+  lowCycleMonths: Int! @col(name: "low_cycle_months")
+  highFieldworkWeeks: Int! @col(name: "high_fieldwork_weeks")
+  mediumFieldworkWeeks: Int! @col(name: "medium_fieldwork_weeks")
+  lowFieldworkWeeks: Int! @col(name: "low_fieldwork_weeks")
+  addedBy: String @col(name: "added_by")
+  modifiedBy: String @col(name: "modified_by")
+  modifiedAt: Timestamp @col(name: "modified_at")
+  createdAt: Timestamp! @col(name: "created_at")
+  updatedAt: Timestamp! @col(name: "updated_at")
+}
+
+type AppSession @table(name: "app_sessions", key: "tokenHash") {
+  tokenHash: String! @col(name: "token_hash")
+  userId: String! @col(name: "user_id")
+  expiresAt: Timestamp! @col(name: "expires_at")
+  revokedAt: Timestamp @col(name: "revoked_at")
+  createdAt: Timestamp! @col(name: "created_at")
+}

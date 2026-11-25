@@ -1,0 +1,587 @@
+mutation UpsertUserProfile(
+  $id: String!
+  $name: String!
+  $roleTitle: String!
+  $fullLabel: String!
+  $headerSubtitle: String!
+  $department: String!
+  $canApproveHead: Boolean!
+  $canApproveIndependent: Boolean!
+  $canApproveCae: Boolean!
+  $employeeNumber: String
+  $accountStatus: String!
+  $failedLoginCount: Int!
+  $isLocked: Boolean!
+  $requiresPasswordChange: Boolean!
+  $passwordHistory: [String!]!
+  $mfaEnabled: Boolean!
+  $isPrivileged: Boolean!
+  $addedBy: String
+  $modifiedBy: String
+) @auth(level: USER) {
+  userProfile_upsert(data: {
+    id: $id
+    name: $name
+    roleTitle: $roleTitle
+    fullLabel: $fullLabel
+    headerSubtitle: $headerSubtitle
+    department: $department
+    canApproveHead: $canApproveHead
+    canApproveIndependent: $canApproveIndependent
+    canApproveCae: $canApproveCae
+    employeeNumber: $employeeNumber
+    accountStatus: $accountStatus
+    failedLoginCount: $failedLoginCount
+    isLocked: $isLocked
+    requiresPasswordChange: $requiresPasswordChange
+    passwordHistory: $passwordHistory
+    mfaEnabled: $mfaEnabled
+    isPrivileged: $isPrivileged
+    createdAt_expr: "request.time"
+    updatedAt_expr: "request.time"
+    addedBy: $addedBy
+    modifiedBy: $modifiedBy
+    modifiedAt_expr: "request.time"
+  })
+}
+
+mutation DeleteUserProfile($id: String!) @auth(level: USER) {
+  userProfile_delete(id: $id)
+}
+
+mutation UpsertSystemUser(
+  $id: String!
+  $username: String!
+  $fullName: String!
+  $email: String!
+  $role: String!
+  $passwordHash: String!
+  $isActive: Boolean!
+  $isLocked: Boolean!
+  $failedLoginCount: Int!
+  $requiresPasswordChange: Boolean!
+  $addedBy: String
+  $modifiedBy: String
+) @auth(level: USER) {
+  systemUser_upsert(data: {
+    id: $id
+    username: $username
+    fullName: $fullName
+    email: $email
+    role: $role
+    passwordHash: $passwordHash
+    isActive: $isActive
+    isLocked: $isLocked
+    failedLoginCount: $failedLoginCount
+    requiresPasswordChange: $requiresPasswordChange
+    createdAt_expr: "request.time"
+    modifiedAt_expr: "request.time"
+    addedBy: $addedBy
+    modifiedBy: $modifiedBy
+  })
+}
+
+mutation DeleteSystemUser($id: String!) @auth(level: USER) {
+  systemUser_delete(id: $id)
+}
+
+mutation UpsertEngagement(
+  $id: String!
+  $ref: String!
+  $year: Int!
+  $title: String!
+  $category: String!
+  $department: String!
+  $entityName: String!
+  $likelihood: Int!
+  $impact: Int!
+  $riskScore: Int!
+  $riskLevel: String!
+  $lead: String!
+  $headReviewer: String!
+  $independentReviewer: String!
+  $startDate: String!
+  $endDate: String!
+  $durationDays: Int!
+  $budgetedHours: Int!
+  $status: String!
+  $readyRatio: String!
+  $lifecycleStage: Int!
+  $fieldworkPct: Int!
+  $fieldworkDayCurrent: Int!
+  $fieldworkDayTotal: Int!
+  $reportStatus: String!
+  $reportRef: String!
+  $executiveSummary: String!
+  $reportRating: String
+  $addedBy: String
+  $modifiedBy: String
+  $auditDivisionId: String
+  $objectives: String!
+  $scope: String!
+  $criteria: String!
+  $addresseeName: String!
+  $addresseeTitle: String!
+  $copyFurnished: String!
+) @auth(level: USER) {
+  engagement_upsert(data: {
+    id: $id
+    ref: $ref
+    year: $year
+    title: $title
+    category: $category
+    department: $department
+    entityName: $entityName
+    likelihood: $likelihood
+    impact: $impact
+    riskScore: $riskScore
+    riskLevel: $riskLevel
+    lead: $lead
+    headReviewer: $headReviewer
+    independentReviewer: $independentReviewer
+    startDate: $startDate
+    endDate: $endDate
+    durationDays: $durationDays
+    budgetedHours: $budgetedHours
+    status: $status
+    readyRatio: $readyRatio
+    lifecycleStage: $lifecycleStage
+    fieldworkPct: $fieldworkPct
+    fieldworkDayCurrent: $fieldworkDayCurrent
+    fieldworkDayTotal: $fieldworkDayTotal
+    reportStatus: $reportStatus
+    reportRef: $reportRef
+    executiveSummary: $executiveSummary
+    createdAt_expr: "request.time"
+    updatedAt_expr: "request.time"
+    reportRating: $reportRating
+    addedBy: $addedBy
+    modifiedBy: $modifiedBy
+    modifiedAt_expr: "request.time"
+    auditDivisionId: $auditDivisionId
+    objectives: $objectives
+    scope: $scope
+    criteria: $criteria
+    addresseeName: $addresseeName
+    addresseeTitle: $addresseeTitle
+    copyFurnished: $copyFurnished
+  })
+}
+
+mutation DeleteEngagement($id: String!) @auth(level: USER) {
+  engagement_delete(id: $id)
+}
+
+mutation UpsertWorkingNote(
+  $id: String!
+  $engagementId: String!
+  $ref: String!
+  $title: String!
+  $controlArea: String!
+  $author: String!
+  $status: String!
+  $hasException: Boolean!
+  $updatedAt: String!
+  $testingProcedure: String!
+  $conclusion: String!
+  $reviewerComments: String
+  $addedBy: String
+  $modifiedBy: String
+  $observations: String!
+) @auth(level: USER) {
+  workingNote_upsert(data: {
+    id: $id
+    engagementId: $engagementId
+    ref: $ref
+    title: $title
+    controlArea: $controlArea
+    author: $author
+    status: $status
+    hasException: $hasException
+    updatedAt: $updatedAt
+    testingProcedure: $testingProcedure
+    conclusion: $conclusion
+    reviewerComments: $reviewerComments
+    createdAt_expr: "request.time"
+    addedBy: $addedBy
+    modifiedBy: $modifiedBy
+    modifiedAt_expr: "request.time"
+    observations: $observations
+  })
+}
+
+mutation DeleteWorkingNote($id: String!) @auth(level: USER) {
+  workingNote_delete(id: $id)
+}
+
+mutation UpsertFinding(
+  $id: String!
+  $engagementId: String!
+  $ref: String!
+  $title: String!
+  $severity: String!
+  $condition: String!
+  $criteria: String!
+  $cause: String!
+  $effect: String!
+  $recommendation: String!
+  $owner: String!
+  $targetDate: String!
+  $status: String!
+  $linkedNoteRef: String!
+  $addedBy: String
+  $modifiedBy: String
+  $category: String!
+) @auth(level: USER) {
+  finding_upsert(data: {
+    id: $id
+    engagementId: $engagementId
+    ref: $ref
+    title: $title
+    severity: $severity
+    condition: $condition
+    criteria: $criteria
+    cause: $cause
+    effect: $effect
+    recommendation: $recommendation
+    owner: $owner
+    targetDate: $targetDate
+    status: $status
+    linkedNoteRef: $linkedNoteRef
+    createdAt_expr: "request.time"
+    addedBy: $addedBy
+    modifiedBy: $modifiedBy
+    modifiedAt_expr: "request.time"
+    category: $category
+  })
+}
+
+mutation DeleteFinding($id: String!) @auth(level: USER) {
+  finding_delete(id: $id)
+}
+
+mutation UpsertTimelineActivity(
+  $id: String!
+  $engagementId: String!
+  $name: String!
+  $roleResponsible: String!
+  $dueDate: String!
+  $completedDate: String
+  $status: String!
+  $stageId: Int!
+  $addedBy: String
+  $modifiedBy: String
+) @auth(level: USER) {
+  timelineActivity_upsert(data: {
+    id: $id
+    engagementId: $engagementId
+    name: $name
+    roleResponsible: $roleResponsible
+    dueDate: $dueDate
+    completedDate: $completedDate
+    status: $status
+    stageId: $stageId
+    createdAt_expr: "request.time"
+    addedBy: $addedBy
+    modifiedBy: $modifiedBy
+    modifiedAt_expr: "request.time"
+  })
+}
+
+mutation DeleteTimelineActivity($id: String!) @auth(level: USER) {
+  timelineActivity_delete(id: $id)
+}
+
+mutation UpsertEngagementFile(
+  $id: String!
+  $engagementId: String!
+  $name: String!
+  $folder: String!
+  $size: String!
+  $uploadedBy: String!
+  $uploadedAt: String!
+  $addedBy: String
+  $modifiedBy: String
+) @auth(level: USER) {
+  engagementFile_upsert(data: {
+    id: $id
+    engagementId: $engagementId
+    name: $name
+    folder: $folder
+    size: $size
+    uploadedBy: $uploadedBy
+    uploadedAt: $uploadedAt
+    createdAt_expr: "request.time"
+    addedBy: $addedBy
+    modifiedBy: $modifiedBy
+    modifiedAt_expr: "request.time"
+  })
+}
+
+mutation DeleteEngagementFile($id: String!) @auth(level: USER) {
+  engagementFile_delete(id: $id)
+}
+
+mutation UpsertActivityLog(
+  $id: String!
+  $engagementId: String!
+  $timestamp: String!
+  $actor: String!
+  $action: String!
+  $detail: String
+  $addedBy: String
+  $modifiedBy: String
+) @auth(level: USER) {
+  activityLog_upsert(data: {
+    id: $id
+    engagementId: $engagementId
+    timestamp: $timestamp
+    actor: $actor
+    action: $action
+    detail: $detail
+    createdAt_expr: "request.time"
+    addedBy: $addedBy
+    modifiedBy: $modifiedBy
+    modifiedAt_expr: "request.time"
+  })
+}
+
+mutation DeleteActivityLog($id: String!) @auth(level: USER) {
+  activityLog_delete(id: $id)
+}
+
+mutation UpsertIssueRegister(
+  $id: String!
+  $ref: String!
+  $title: String!
+  $auditRef: String!
+  $auditTitle: String!
+  $severity: String!
+  $owner: String!
+  $ownerUnit: String!
+  $originalDue: String!
+  $currentDue: String!
+  $extensionCount: Int!
+  $daysStatus: String!
+  $isOverdue: Boolean!
+  $isDueSoon: Boolean!
+  $status: String!
+  $actionPlanSummary: String!
+  $evidenceNote: String
+  $addedBy: String
+  $modifiedBy: String
+  $extensionReason: String!
+) @auth(level: USER) {
+  issueRegister_upsert(data: {
+    id: $id
+    ref: $ref
+    title: $title
+    auditRef: $auditRef
+    auditTitle: $auditTitle
+    severity: $severity
+    owner: $owner
+    ownerUnit: $ownerUnit
+    originalDue: $originalDue
+    currentDue: $currentDue
+    extensionCount: $extensionCount
+    daysStatus: $daysStatus
+    isOverdue: $isOverdue
+    isDueSoon: $isDueSoon
+    status: $status
+    actionPlanSummary: $actionPlanSummary
+    evidenceNote: $evidenceNote
+    createdAt_expr: "request.time"
+    updatedAt_expr: "request.time"
+    addedBy: $addedBy
+    modifiedBy: $modifiedBy
+    modifiedAt_expr: "request.time"
+    extensionReason: $extensionReason
+  })
+}
+
+mutation DeleteIssueRegister($id: String!) @auth(level: USER) {
+  issueRegister_delete(id: $id)
+}
+
+mutation UpsertUniverseEntity(
+  $id: String!
+  $code: String!
+  $name: String!
+  $division: String!
+  $category: String!
+  $likelihood: Int!
+  $impact: Int!
+  $riskScore: Int!
+  $riskLevel: String!
+  $lastAudited: String!
+  $nextDue: String!
+  $cycleMonths: Int!
+  $defaultLead: String!
+  $addedBy: String
+  $modifiedBy: String
+  $auditDivisionId: String
+  $riskNotes: String!
+) @auth(level: USER) {
+  universeEntity_upsert(data: {
+    id: $id
+    code: $code
+    name: $name
+    division: $division
+    category: $category
+    likelihood: $likelihood
+    impact: $impact
+    riskScore: $riskScore
+    riskLevel: $riskLevel
+    lastAudited: $lastAudited
+    nextDue: $nextDue
+    cycleMonths: $cycleMonths
+    defaultLead: $defaultLead
+    createdAt_expr: "request.time"
+    updatedAt_expr: "request.time"
+    addedBy: $addedBy
+    modifiedBy: $modifiedBy
+    modifiedAt_expr: "request.time"
+    auditDivisionId: $auditDivisionId
+    riskNotes: $riskNotes
+  })
+}
+
+mutation DeleteUniverseEntity($id: String!) @auth(level: USER) {
+  universeEntity_delete(id: $id)
+}
+
+mutation UpsertSizingConfig(
+  $id: String!
+  $sizeName: String!
+  $code: String!
+  $workingDays: Int!
+  $calendarSpan: String!
+  $auditors: Int!
+  $hoursPerDay: Int!
+  $budgetedHours: Int!
+  $typicalUse: String!
+  $addedBy: String
+  $modifiedBy: String
+) @auth(level: USER) {
+  sizingConfig_upsert(data: {
+    id: $id
+    sizeName: $sizeName
+    code: $code
+    workingDays: $workingDays
+    calendarSpan: $calendarSpan
+    auditors: $auditors
+    hoursPerDay: $hoursPerDay
+    budgetedHours: $budgetedHours
+    typicalUse: $typicalUse
+    createdAt_expr: "request.time"
+    updatedAt_expr: "request.time"
+    addedBy: $addedBy
+    modifiedBy: $modifiedBy
+    modifiedAt_expr: "request.time"
+  })
+}
+
+mutation DeleteSizingConfig($id: String!) @auth(level: USER) {
+  sizingConfig_delete(id: $id)
+}
+
+mutation UpsertAuditFrequency(
+  $id: String!
+  $high: Int!
+  $medium: Int!
+  $low: Int!
+  $addedBy: String
+  $modifiedBy: String
+) @auth(level: USER) {
+  auditFrequency_upsert(data: {
+    id: $id
+    high: $high
+    medium: $medium
+    low: $low
+    updatedAt_expr: "request.time"
+    addedBy: $addedBy
+    modifiedBy: $modifiedBy
+    modifiedAt_expr: "request.time"
+  })
+}
+
+mutation DeleteAuditFrequency($id: String!) @auth(level: USER) {
+  auditFrequency_delete(id: $id)
+}
+
+mutation UpsertMasterData(
+  $id: String!
+  $data: Any!
+  $addedBy: String
+  $modifiedBy: String
+) @auth(level: USER) {
+  masterData_upsert(data: {
+    id: $id
+    data: $data
+    createdAt_expr: "request.time"
+    updatedAt_expr: "request.time"
+    addedBy: $addedBy
+    modifiedBy: $modifiedBy
+    modifiedAt_expr: "request.time"
+  })
+}
+
+mutation DeleteMasterData($id: String!) @auth(level: USER) {
+  masterData_delete(id: $id)
+}
+
+mutation UpsertAuditDivisionRiskScale(
+  $id: String!
+  $name: String!
+  $highMinScore: Float!
+  $mediumMinScore: Float!
+  $highCycleMonths: Int!
+  $mediumCycleMonths: Int!
+  $lowCycleMonths: Int!
+  $highFieldworkWeeks: Int!
+  $mediumFieldworkWeeks: Int!
+  $lowFieldworkWeeks: Int!
+  $addedBy: String
+  $modifiedBy: String
+) @auth(level: USER) {
+  auditDivisionRiskScale_upsert(data: {
+    id: $id
+    name: $name
+    highMinScore: $highMinScore
+    mediumMinScore: $mediumMinScore
+    highCycleMonths: $highCycleMonths
+    mediumCycleMonths: $mediumCycleMonths
+    lowCycleMonths: $lowCycleMonths
+    highFieldworkWeeks: $highFieldworkWeeks
+    mediumFieldworkWeeks: $mediumFieldworkWeeks
+    lowFieldworkWeeks: $lowFieldworkWeeks
+    addedBy: $addedBy
+    modifiedBy: $modifiedBy
+    modifiedAt_expr: "request.time"
+    createdAt_expr: "request.time"
+    updatedAt_expr: "request.time"
+  })
+}
+
+mutation DeleteAuditDivisionRiskScale($id: String!) @auth(level: USER) {
+  auditDivisionRiskScale_delete(id: $id)
+}
+
+mutation UpsertAppSession(
+  $tokenHash: String!
+  $userId: String!
+  $expiresAt: Timestamp!
+  $revokedAt: Timestamp
+) @auth(level: USER) {
+  appSession_upsert(data: {
+    tokenHash: $tokenHash
+    userId: $userId
+    expiresAt: $expiresAt
+    revokedAt: $revokedAt
+    createdAt_expr: "request.time"
+  })
+}
+
+mutation DeleteAppSession($tokenHash: String!) @auth(level: USER) {
+  appSession_delete(key: { tokenHash: $tokenHash })
+}

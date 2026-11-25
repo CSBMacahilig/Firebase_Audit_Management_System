@@ -1,0 +1,13 @@
+specVersion: "v1"
+serviceId: "csb-ams-2-service"
+location: "asia-southeast1"
+schemas:
+  - source: "./schema"
+    datasource:
+      postgresql:
+        database: "csb-ams-3-database"
+        cloudSql:
+          instanceId: "csb-ams-instance"
+          # schemaValidation: "STRICT"     # STRICT mode makes Postgres schema match Data Connect exactly.
+          # schemaValidation: "COMPATIBLE" # COMPATIBLE mode makes Postgres schema compatible with Data Connect.
+connectorDirs: ["./example"]
