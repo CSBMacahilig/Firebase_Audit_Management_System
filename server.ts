@@ -58,6 +58,7 @@ function ensureConfiguredOr503(res: Response): boolean {
 
 async function startServer() {
   const app = express();
+  const hmrEnabled = process.env.DISABLE_HMR !== 'true' && !process.env.APP_URL;
   app.use(express.json({ limit: '10mb' }));
 
   app.get('/api/health', (_req, res) => {
@@ -448,7 +449,7 @@ async function startServer() {
         createViteServer({
           server: {
             middlewareMode: true,
-            hmr: process.env.DISABLE_HMR !== 'true',
+            hmr: hmrEnabled,
           },
           appType: 'spa',
         })
