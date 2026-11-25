@@ -65,7 +65,7 @@ async function startServer() {
     res.json({ ok: true });
   });
 
-  app.get('/api/sql/status', requireFirebaseAuth, (_req: AuthenticatedRequest, res) => {
+  app.get('/api/sql/status', (_req, res) => {
     res.json(getSqlPublicConfig());
   });
 

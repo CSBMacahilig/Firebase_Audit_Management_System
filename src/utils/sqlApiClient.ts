@@ -88,11 +88,7 @@ export async function getSqlConnectStatus(): Promise<SqlConnectStatus> {
 
   inflightStatus = (async () => {
     try {
-      const headers = await getBearerHeaders();
-      if (!headers) {
-        throw new Error('Authentication required for Firebase Data Connect.');
-      }
-      const res = await fetch('/api/sql/status', { headers });
+      const res = await fetch('/api/sql/status');
       if (!res.ok) {
         throw await readApiError(res, 'Firebase Data Connect status API error');
       }
