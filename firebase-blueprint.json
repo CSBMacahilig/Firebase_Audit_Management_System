@@ -12,6 +12,19 @@
       },
       "required": ["uid", "email", "grantedBy", "createdAt"]
     },
+    "AdminInvite": {
+      "title": "AdminInvite",
+      "description": "Trusted admin-authored invite granting System administrator privileges upon verified Google sign-in.",
+      "type": "object",
+      "properties": {
+        "emailKey": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "isActive": { "type": "boolean" },
+        "grantedBy": { "type": "string", "maxLength": 160 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["emailKey", "email", "isActive", "grantedBy", "updatedAt"]
+    },
     "User": {
       "title": "User",
       "description": "Authenticated user account record without PII.",
@@ -21,6 +34,9 @@
         "username": { "type": "string", "minLength": 1, "maxLength": 80 },
         "fullName": { "type": "string", "minLength": 1, "maxLength": 160 },
         "role": { "type": "string", "enum": ["admin", "user"] },
+        "appRole": { "type": "string", "maxLength": 80 },
+        "scope": { "type": "string", "maxLength": 240 },
+        "employeeNumber": { "type": "string", "maxLength": 64 },
         "isActive": { "type": "boolean" },
         "isLocked": { "type": "boolean" },
         "failedLoginCount": { "type": "integer" },
@@ -52,6 +68,9 @@
         "fullName": { "type": "string", "minLength": 1, "maxLength": 160 },
         "email": { "type": "string", "format": "email", "maxLength": 160 },
         "role": { "type": "string", "enum": ["admin", "user"] },
+        "appRole": { "type": "string", "maxLength": 80 },
+        "scope": { "type": "string", "maxLength": 240 },
+        "employeeNumber": { "type": "string", "maxLength": 64 },
         "isActive": { "type": "boolean" },
         "isLocked": { "type": "boolean" },
         "failedLoginCount": { "type": "integer" },
@@ -369,6 +388,10 @@
     "/admins/{userId}": {
       "schema": { "$ref": "#/entities/Admin" },
       "description": "Explicit administrator privileges keyed by Firebase UID."
+    },
+    "/admin_invites/{emailKey}": {
+      "schema": { "$ref": "#/entities/AdminInvite" },
+      "description": "Admin-authored invites enabling automatic System administrator promotion on verified sign-in."
     },
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/User" },

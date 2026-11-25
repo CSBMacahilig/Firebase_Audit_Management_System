@@ -34,6 +34,7 @@ import {
   canAccessTab,
   DEFAULT_ROLE_DEFINITIONS,
   hasMatrixCapability,
+  normalizeRole,
   RolePermissionMatrixRow,
 } from './utils/rbac';
 import { AccessGuard } from './components/AccessGuard';
@@ -44,6 +45,7 @@ import {
   subscribeAuthSession,
 } from './utils/authStore';
 import {
+  ensureWorkspaceMembershipSynced,
   fetchEngagements,
   fetchIssues,
   fetchUniverse,
@@ -53,6 +55,7 @@ import {
   fetchMasterData,
   seedBaselineIfNeeded,
   subscribeToWorkspaceChanges,
+  syncWorkspaceMembershipForEmail,
   upsertEngagement,
   upsertIssue,
   upsertWorkingNote,
@@ -218,6 +221,9 @@ export default function App() {
       setDataLoading(true);
       try {
         await seedBaselineIfNeeded();
+        if (authSession.role === 'admin') {
+          await ensureWorkspaceMembershipSynced();
+        }
         const [engs, iss, uni, profiles, freq, divisionScales, _roles, matrix] = await Promise.all([
           fetchEngagements(),
           fetchIssues(),
@@ -239,13 +245,36 @@ export default function App() {
 
         const matched = profiles.find(
           (p) =>
-            p.name.toLowerCase() === authSession.fullName.toLowerCase() ||
             (authSession.email && p.email && p.email.toLowerCase() === authSession.email.toLowerCase()) ||
-            (authSession.username && p.email && p.email.toLowerCase().startsWith(authSession.username.toLowerCase())) ||
-            p.fullLabel.toLowerCase().includes(authSession.username.toLowerCase()) ||
-            (authSession.username && p.employeeNumber && p.employeeNumber.toLowerCase() === authSession.username.toLowerCase())
+            (authSession.employeeNumber && p.employeeNumber && p.employeeNumber.toLowerCase() === authSession.employeeNumber.toLowerCase()) ||
+            p.name.toLowerCase() === authSession.fullName.toLowerCase()
         );
-        setCurrentUser(matched ?? profiles[0] ?? USERS[0] ?? FALLBACK_USER);
+        const authoritativeRole =
+          authSession.appRole ||
+          matched?.headerSubtitle ||
+          matched?.roleTitle ||
+          (authSession.role === 'admin' ? 'System administrator' : 'Assisting Auditor');
+        const normRole = normalizeRole(authoritativeRole);
+        const displayName = matched?.name || authSession.fullName || authSession.username;
+        const resolvedProfile: UserProfile = {
+          ...(matched ?? FALLBACK_USER),
+          id: matched?.id ?? authSession.userId,
+          name: displayName,
+          email: authSession.email || matched?.email,
+          roleTitle: matched?.roleTitle || `${authoritativeRole} (Internal Audit)`,
+          fullLabel: `${displayName} – ${authoritativeRole}`,
+          headerSubtitle: authoritativeRole,
+          department: matched?.department || 'Internal Audit',
+          canApproveHead: normRole === 'Chief Audit Executive' || normRole === 'System administrator',
+          canApproveIndependent: ['Audit Division Head', 'Audit Supervisor', 'Independent Reviewer'].includes(normRole),
+          canApproveCAE: normRole === 'Chief Audit Executive',
+          employeeNumber: authSession.employeeNumber || matched?.employeeNumber,
+          accountStatus: 'Active',
+          isLocked: false,
+          requiresPasswordChange: false,
+          isPrivileged: normRole === 'System administrator' || normRole === 'Chief Audit Executive',
+        };
+        setCurrentUser(resolvedProfile);
         setFrequenciesState(freq);
 
         let skipInitialEngSnap = true;
@@ -292,7 +321,7 @@ export default function App() {
       if (engRefreshTimer) clearTimeout(engRefreshTimer);
       if (unsubWorkspace) unsubWorkspace();
     };
-  }, [authReady, authSession?.userId]);
+  }, [authReady, authSession?.userId, authSession?.role, authSession?.appRole]);
 
   const handleUpdateIssue = (issue: IssueRegisterItem) => {
     setIssues((prev) => prev.map((i) => i.id === issue.id ? issue : i));
@@ -437,7 +466,9 @@ export default function App() {
               fullName: profile.name,
               email: profile.email ?? '',
               role: 'user',
-              password: getText(row, 'initial_password'),
+              appRole: profile.headerSubtitle || profile.roleTitle,
+              scope: profile.department === 'Internal Audit' ? 'Full access' : `${profile.department} operations`,
+              employeeNumber: profile.employeeNumber,
             });
             if (!accountResult.success) {
               const rollbackError = await deleteUserProfile(profile.id);
@@ -448,6 +479,11 @@ export default function App() {
                   : `Login creation failed: ${accountResult.error ?? 'unknown error'}. The imported profile was rolled back.`
               );
             }
+            if (profile.email) {
+              await syncWorkspaceMembershipForEmail(profile.email, true);
+            }
+          } else if (profile.email && authSession?.role === 'admin') {
+            await syncWorkspaceMembershipForEmail(profile.email, true);
           }
           importedProfiles.push(profile);
         } else if (target === 'annual_plan') {

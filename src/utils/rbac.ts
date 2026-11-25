@@ -376,7 +376,7 @@ export function canPerformAction(
       if (role === 'System administrator') return { allowed: true };
       return {
         allowed: false,
-        reason: `Only System Administrators can create users, change role assignments, or reset passwords. Current role: ${role}.`,
+        reason: `Only System Administrators can create users or change role assignments. Current role: ${role}.`,
       };
 
     case 'clear_working_note':

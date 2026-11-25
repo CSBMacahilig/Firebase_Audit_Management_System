@@ -43,7 +43,7 @@ const TEMPLATE_COLUMNS: Record<BulkImportTarget, string[]> = {
   profiles: [
     'employee_number', 'name', 'email', 'role_title', 'department', 'header_subtitle',
     'can_approve_head', 'can_approve_independent', 'can_approve_cae', 'username',
-    'system_role', 'initial_password',
+    'system_role',
   ],
   annual_plan: [
     'ref', 'year', 'title', 'audit_type', 'entity_code', 'audit_division', 'likelihood',
@@ -97,7 +97,7 @@ const SAMPLE_ROWS: Record<BulkImportTarget, string[]> = {
   ],
   profiles: [
     'EMP-101', 'J. Reyes', 'j.reyes@example.com', 'Assisting Auditor',
-    'Internal Audit', 'Assisting Auditor', 'false', 'false', 'false', '', '', '',
+    'Internal Audit', 'Assisting Auditor', 'false', 'false', 'false', '', '',
   ],
   annual_plan: [
     'AE-2026-101', '2026', 'Sample Lending Audit', 'Operational audit', 'AU-0101',
@@ -373,19 +373,15 @@ export function validateBulkImportRows(
       }
       const username = values.username?.trim() ?? '';
       const systemRole = values.system_role?.trim().toLowerCase() ?? '';
-      const password = values.initial_password ?? '';
-      const hasAnyLoginField = Boolean(username || systemRole || password);
-      if (hasAnyLoginField && (!username || !systemRole || !password)) {
-        addError(row, 'To create a login, provide username, system_role, and initial_password together.');
+      const hasAnyLoginField = Boolean(username || systemRole);
+      if (hasAnyLoginField && (!username || !systemRole)) {
+        addError(row, 'To grant Google Sign-In access, provide username and system_role together.');
       }
       if (username && !/^[a-z0-9._-]{3,64}$/i.test(username)) {
         addError(row, 'username must be 3–64 letters, numbers, dots, underscores, or hyphens.');
       }
       if (systemRole && systemRole !== 'user') {
         addError(row, 'Bulk import can create standard user accounts only; create admin accounts separately.');
-      }
-      if (password && password.length < 8) {
-        addError(row, 'initial_password must be at least 8 characters.');
       }
     }
 

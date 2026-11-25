@@ -241,7 +241,7 @@ export async function runSecurityTests() {
       cycleMonths: 24,
       defaultLead: 'P. Mendoza',
       ownerId: USER_A_UID,
-      memberUids: Array.from({ length: 60 }, (_, i) => `u-${i}`), // Exceeds max 50!
+      memberUids: Array.from({ length: 110 }, (_, i) => `u-${i}`), // Exceeds max 100!
       memberEmails: [USER_A_EMAIL],
       createdAt: serverTimestamp(),
       modifiedAt: serverTimestamp(),

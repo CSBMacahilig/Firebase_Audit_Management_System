@@ -3,7 +3,7 @@
  *
  * Uses Firebase Authentication (Google Sign-In via signInWithPopup) and stores
  * RBAC/account state in Firestore (`/users/{uid}`, `/users/{uid}/private/info`,
- * `/admins/{uid}`, and `/system_users/{id}`).
+ * `/admins/{uid}`, `/admin_invites/{emailKey}`, and `/system_users/{id}`).
  */
 
 import { onAuthStateChanged, signInWithPopup, signOut, User as FirebaseUser } from 'firebase/auth';
@@ -22,6 +22,7 @@ import {
 } from 'firebase/firestore';
 import { auth, db, googleProvider } from '../firebase';
 import { handleFirestoreError, OperationType } from './firestoreError';
+import { clearSqlStatusCache, sqlMirrorHelpers } from './sqlApiClient';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -35,6 +36,9 @@ export interface SystemUser {
   fullName: string;
   email: string;
   role: SystemRole;
+  appRole?: string;
+  scope?: string;
+  employeeNumber?: string;
   passwordHash: string;
   isActive: boolean;
   isLocked: boolean;
@@ -51,6 +55,9 @@ export interface AuthSession {
   username: string;
   email?: string;
   role: SystemRole;
+  appRole?: string;
+  scope?: string;
+  employeeNumber?: string;
   fullName: string;
   token: string;
   issuedAt: string;
@@ -79,8 +86,40 @@ export function sanitizeFirestoreId(raw: string, fallback = 'id'): string {
   return (cleaned || fallback).slice(0, 128);
 }
 
+export function emailToInviteKey(email: string): string {
+  const cleaned = email.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_');
+  return (cleaned || 'user').slice(0, 128);
+}
+
+export function emailToSystemUserId(email: string): string {
+  return `sys_${emailToInviteKey(email)}`.slice(0, 128);
+}
+
 function clampString(val: string | undefined | null, maxLen: number): string {
   return (val ?? '').trim().slice(0, maxLen);
+}
+
+async function syncAdminInvite(email: string, grantAdmin: boolean, grantedBy: string): Promise<void> {
+  const mail = clampString(email.toLowerCase(), 160);
+  if (!mail) return;
+  const emailKey = emailToInviteKey(mail);
+  const inviteRef = doc(db, 'admin_invites', emailKey);
+
+  try {
+    if (grantAdmin) {
+      await setDoc(inviteRef, {
+        emailKey,
+        email: mail,
+        isActive: true,
+        grantedBy: clampString(grantedBy || BOOTSTRAPPED_ADMIN_EMAIL, 160),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await deleteDoc(inviteRef).catch(() => {});
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `admin_invites/${emailKey}`);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -135,44 +174,83 @@ export async function resolveFirebaseUserSession(firebaseUser: FirebaseUser): Pr
   const displayName = clampString(firebaseUser.displayName || username, 160);
   const nowIso = new Date().toISOString();
 
-  // 1. Check /admins/{uid}
-  let isAdminGrant = isBootstrapped;
-  if (!isAdminGrant) {
-    try {
-      const adminSnap = await getDoc(doc(db, 'admins', uid));
-      isAdminGrant = adminSnap.exists();
-    } catch (err) {
-      handleFirestoreError(err, OperationType.GET, `admins/${uid}`);
-    }
-  }
-
-  // 2. Check /system_users for pre-provisioned role or lock/deactivation
+  // 1. Verify account registration in /system_users (allowlist check)
   let preProvisionedRole: SystemRole | null = null;
   let preProvisionedActive = true;
   let preProvisionedLocked = false;
   let preProvisionedName: string | null = null;
+  let preProvisionedAppRole: string | undefined;
+  let preProvisionedScope: string | undefined;
+  let preProvisionedEmpNo: string | undefined;
+  let hasSystemUserRecord = false;
 
   try {
     const sysQ = query(collection(db, 'system_users'), where('email', '==', email));
     const sysSnap = await getDocs(sysQ);
     if (!sysSnap.empty) {
-      const sysData = sysSnap.docs[0].data();
+      hasSystemUserRecord = true;
+      const preferredId = emailToSystemUserId(email);
+      const preferredDoc = sysSnap.docs.find((d) => d.id === preferredId) ?? sysSnap.docs[0];
+      const sysData = preferredDoc.data();
       preProvisionedRole = sysData.role === 'admin' ? 'admin' : 'user';
       preProvisionedActive = sysData.isActive !== false;
       preProvisionedLocked = sysData.isLocked === true;
       if (typeof sysData.fullName === 'string' && sysData.fullName.trim()) {
         preProvisionedName = clampString(sysData.fullName, 160);
       }
+      if (typeof sysData.appRole === 'string' && sysData.appRole.trim()) {
+        preProvisionedAppRole = clampString(sysData.appRole, 80);
+      }
+      if (typeof sysData.scope === 'string' && sysData.scope.trim()) {
+        preProvisionedScope = clampString(sysData.scope, 240);
+      }
+      if (typeof sysData.employeeNumber === 'string' && sysData.employeeNumber.trim()) {
+        preProvisionedEmpNo = clampString(sysData.employeeNumber, 64);
+      }
     }
   } catch (err) {
     handleFirestoreError(err, OperationType.LIST, 'system_users');
   }
 
-  // 3. Read or atomically create /users/{uid} + /users/{uid}/private/info
+  if (!isBootstrapped && !hasSystemUserRecord) {
+    await signOut(auth);
+    clearSession();
+    throw new Error(
+      `Access denied. Your Google account (${email}) is not registered in User accounts & role assignments. Contact your System Administrator.`
+    );
+  }
+
+  // 2. Check /admin_invites/{emailKey} and /admins/{uid}
+  const inviteKey = emailToInviteKey(email);
+  let hasActiveInvite = false;
+  if (!isBootstrapped) {
+    try {
+      const inviteSnap = await getDoc(doc(db, 'admin_invites', inviteKey));
+      hasActiveInvite = inviteSnap.exists() && inviteSnap.data()?.isActive === true;
+    } catch {
+      hasActiveInvite = false;
+    }
+  }
+
+  let hasAdminDoc = false;
+  if (!isBootstrapped) {
+    try {
+      const adminSnap = await getDoc(doc(db, 'admins', uid));
+      hasAdminDoc = adminSnap.exists();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, `admins/${uid}`);
+    }
+  }
+
+  // 3. Read /users/{uid}
   const userRef = doc(db, 'users', uid);
   const privateRef = doc(db, 'users', uid, 'private', 'info');
+  const adminRef = doc(db, 'admins', uid);
+
   let userExists = false;
-  let userRole: SystemRole = isAdminGrant ? 'admin' : 'user';
+  let existingUserAppRole: string | undefined;
+  let existingUserScope: string | undefined;
+  let existingUserEmpNo: string | undefined;
   let userActive = preProvisionedActive;
   let userLocked = preProvisionedLocked;
   let resolvedName = preProvisionedName || displayName;
@@ -182,11 +260,23 @@ export async function resolveFirebaseUserSession(firebaseUser: FirebaseUser): Pr
     if (userSnap.exists()) {
       userExists = true;
       const data = userSnap.data();
-      userRole = isAdminGrant || data.role === 'admin' ? 'admin' : 'user';
-      userActive = data.isActive !== false && preProvisionedActive;
-      userLocked = data.isLocked === true || preProvisionedLocked;
-      if (typeof data.fullName === 'string' && data.fullName.trim()) {
+      userActive = hasSystemUserRecord
+        ? preProvisionedActive
+        : data.isActive !== false;
+      userLocked = hasSystemUserRecord
+        ? preProvisionedLocked
+        : data.isLocked === true;
+      if (!preProvisionedName && typeof data.fullName === 'string' && data.fullName.trim()) {
         resolvedName = clampString(data.fullName, 160);
+      }
+      if (typeof data.appRole === 'string' && data.appRole.trim()) {
+        existingUserAppRole = clampString(data.appRole, 80);
+      }
+      if (typeof data.scope === 'string' && data.scope.trim()) {
+        existingUserScope = clampString(data.scope, 240);
+      }
+      if (typeof data.employeeNumber === 'string' && data.employeeNumber.trim()) {
+        existingUserEmpNo = clampString(data.employeeNumber, 64);
       }
     }
   } catch (err) {
@@ -203,23 +293,42 @@ export async function resolveFirebaseUserSession(firebaseUser: FirebaseUser): Pr
     );
   }
 
-  if (!userExists) {
-    // Non-bootstrapped users must always self-register as 'user' per Firestore security rules.
-    const initialRole: SystemRole = isBootstrapped ? 'admin' : 'user';
-    if (isBootstrapped) {
-      userRole = 'admin';
-    } else if (isAdminGrant) {
-      userRole = 'admin';
-    } else if (preProvisionedRole === 'admin') {
-      userRole = 'user';
-    }
+  const resolvedAppRole = clampString(
+    preProvisionedAppRole ||
+      (isBootstrapped ? 'System administrator' : existingUserAppRole) ||
+      (hasActiveInvite || preProvisionedRole === 'admin' ? 'System administrator' : 'Assisting Auditor'),
+    80
+  );
+  const resolvedScope = clampString(preProvisionedScope || existingUserScope || 'Assigned engagements', 240);
+  const resolvedEmpNo = clampString(preProvisionedEmpNo || existingUserEmpNo || '', 64);
 
-    const batch = writeBatch(db);
-    batch.set(userRef, {
+  const shouldBeAdmin =
+    isBootstrapped ||
+    hasActiveInvite ||
+    (hasAdminDoc && preProvisionedRole !== 'user' && !resolvedAppRole.toLowerCase().includes('auditee'));
+  const targetSystemRole: SystemRole = shouldBeAdmin ? 'admin' : 'user';
+
+  // 4. Atomically sync /users/{uid}, /users/{uid}/private/info, and /admins/{uid}
+  const batch = writeBatch(db);
+  if (shouldBeAdmin && !isBootstrapped && !hasAdminDoc) {
+    batch.set(adminRef, {
+      uid,
+      email,
+      grantedBy: BOOTSTRAPPED_ADMIN_EMAIL,
+      createdAt: serverTimestamp(),
+    });
+  } else if (!shouldBeAdmin && !isBootstrapped && hasAdminDoc) {
+    batch.delete(adminRef);
+  }
+
+  if (!userExists) {
+    const userPayload: Record<string, unknown> = {
       uid,
       username,
       fullName: resolvedName,
-      role: initialRole,
+      role: targetSystemRole,
+      appRole: resolvedAppRole,
+      scope: resolvedScope,
       isActive: true,
       isLocked: false,
       failedLoginCount: 0,
@@ -227,26 +336,33 @@ export async function resolveFirebaseUserSession(firebaseUser: FirebaseUser): Pr
       createdAt: serverTimestamp(),
       lastLogin: nowIso,
       modifiedAt: serverTimestamp(),
-    });
+    };
+    if (resolvedEmpNo) userPayload.employeeNumber = resolvedEmpNo;
+
+    batch.set(userRef, userPayload);
     batch.set(privateRef, {
       uid,
       email,
       updatedAt: serverTimestamp(),
     });
-    try {
-      await batch.commit();
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `users/${uid}`);
-    }
   } else {
-    try {
-      await updateDoc(userRef, {
-        lastLogin: nowIso,
-        modifiedAt: serverTimestamp(),
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${uid}`);
-    }
+    const updatePayload: Record<string, unknown> = {
+      username,
+      fullName: resolvedName,
+      role: targetSystemRole,
+      appRole: resolvedAppRole,
+      scope: resolvedScope,
+      lastLogin: nowIso,
+      modifiedAt: serverTimestamp(),
+    };
+    if (resolvedEmpNo) updatePayload.employeeNumber = resolvedEmpNo;
+    batch.update(userRef, updatePayload);
+  }
+
+  try {
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `users/${uid}`);
   }
 
   const token = await firebaseUser.getIdToken();
@@ -254,7 +370,10 @@ export async function resolveFirebaseUserSession(firebaseUser: FirebaseUser): Pr
     userId: uid,
     username,
     email,
-    role: isBootstrapped ? 'admin' : userRole,
+    role: targetSystemRole,
+    appRole: resolvedAppRole,
+    scope: resolvedScope,
+    ...(resolvedEmpNo ? { employeeNumber: resolvedEmpNo } : {}),
     fullName: resolvedName,
     token,
     issuedAt: nowIso,
@@ -310,6 +429,7 @@ export async function login(_username: string, _password: string): Promise<Login
 
 export function logout(): void {
   clearSession();
+  clearSqlStatusCache();
   void signOut(auth).catch(() => {
     // Ignore sign-out errors
   });
@@ -333,9 +453,9 @@ export async function loadUsers(): Promise<SystemUser[]> {
 
   const results: SystemUser[] = [];
   const seenEmails = new Set<string>();
+  const isBootstrapped = current.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL;
 
   try {
-    const isBootstrapped = current.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL;
     const usersSnap = isBootstrapped
       ? await getDocs(collection(db, 'users'))
       : await getDocs(query(collection(db, 'users'), where('uid', '==', current.uid)));
@@ -358,6 +478,9 @@ export async function loadUsers(): Promise<SystemUser[]> {
         fullName: String(d.fullName ?? ''),
         email,
         role: d.role === 'admin' ? 'admin' : 'user',
+        appRole: typeof d.appRole === 'string' ? d.appRole : undefined,
+        scope: typeof d.scope === 'string' ? d.scope : undefined,
+        employeeNumber: typeof d.employeeNumber === 'string' ? d.employeeNumber : undefined,
         passwordHash: '',
         isActive: d.isActive !== false,
         isLocked: d.isLocked === true,
@@ -375,7 +498,6 @@ export async function loadUsers(): Promise<SystemUser[]> {
 
   try {
     const emailLower = (current.email ?? '').toLowerCase();
-    const isBootstrapped = emailLower === BOOTSTRAPPED_ADMIN_EMAIL;
     const sysSnap = isBootstrapped
       ? await getDocs(collection(db, 'system_users'))
       : await getDocs(query(collection(db, 'system_users'), where('email', '==', emailLower)));
@@ -390,6 +512,9 @@ export async function loadUsers(): Promise<SystemUser[]> {
         fullName: String(d.fullName ?? ''),
         email: String(d.email ?? ''),
         role: d.role === 'admin' ? 'admin' : 'user',
+        appRole: typeof d.appRole === 'string' ? d.appRole : undefined,
+        scope: typeof d.scope === 'string' ? d.scope : undefined,
+        employeeNumber: typeof d.employeeNumber === 'string' ? d.employeeNumber : undefined,
         passwordHash: '',
         isActive: d.isActive !== false,
         isLocked: d.isLocked === true,
@@ -410,7 +535,16 @@ export async function loadUsers(): Promise<SystemUser[]> {
 
 export async function adminAddUser(
   session: AuthSession,
-  data: { username: string; fullName: string; email: string; role: SystemRole; password?: string }
+  data: {
+    username: string;
+    fullName: string;
+    email: string;
+    role: SystemRole;
+    appRole?: string;
+    scope?: string;
+    employeeNumber?: string;
+    password?: string;
+  }
 ): Promise<{ success: boolean; error?: string }> {
   if (session.role !== 'admin') {
     return { success: false, error: 'Access denied. Admin role required.' };
@@ -425,16 +559,23 @@ export async function adminAddUser(
     return { success: false, error: 'Username, full name, and Google email are required.' };
   }
 
-  const docId = sanitizeFirestoreId(`sys-${uname}-${Date.now()}`, `sys-${Date.now()}`);
+  const docId = emailToSystemUserId(mail);
   const nowIso = new Date().toISOString();
+  const isBootstrapped = (auth.currentUser?.email ?? '').toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL;
 
   try {
-    const existing = await getDocs(query(collection(db, 'system_users'), where('email', '==', mail)));
-    if (!existing.empty) {
+    const detSnap = await getDoc(doc(db, 'system_users', docId));
+    if (detSnap.exists()) {
       return { success: false, error: `A user with email "${mail}" already exists.` };
     }
+    if (isBootstrapped) {
+      const legacySnap = await getDocs(query(collection(db, 'system_users'), where('email', '==', mail)));
+      if (!legacySnap.empty) {
+        return { success: false, error: `A user with email "${mail}" already exists.` };
+      }
+    }
 
-    await setDoc(doc(db, 'system_users', docId), {
+    const payload: Record<string, unknown> = {
       id: docId,
       username: uname,
       fullName,
@@ -448,6 +589,24 @@ export async function adminAddUser(
       createdAt: nowIso,
       lastLogin: null,
       modifiedAt: serverTimestamp(),
+    };
+    if (data.appRole) payload.appRole = clampString(data.appRole, 80);
+    if (data.scope) payload.scope = clampString(data.scope, 240);
+    if (data.employeeNumber) payload.employeeNumber = clampString(data.employeeNumber, 64);
+
+    await setDoc(doc(db, 'system_users', docId), payload);
+    await syncAdminInvite(mail, data.role === 'admin', session.email || session.username);
+    await sqlMirrorHelpers.upsertSystemUser({
+      id: docId,
+      username: uname,
+      fullName,
+      email: mail,
+      role: data.role,
+      appRole: data.appRole,
+      scope: data.scope,
+      employeeNumber: data.employeeNumber,
+      isActive: true,
+      isLocked: false,
     });
     return { success: true };
   } catch (err) {
@@ -457,12 +616,15 @@ export async function adminAddUser(
 
 export async function adminUnlockUser(
   session: AuthSession,
-  targetUserId: string
+  targetUserId: string,
+  email?: string
 ): Promise<{ success: boolean; error?: string }> {
   if (session.role !== 'admin') {
     return { success: false, error: 'Access denied. Admin role required.' };
   }
   const safeId = sanitizeFirestoreId(targetUserId);
+  const mail = clampString(email?.toLowerCase(), 160);
+  const isBootstrapped = (auth.currentUser?.email ?? '').toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL;
 
   try {
     const userRef = doc(db, 'users', safeId);
@@ -473,16 +635,29 @@ export async function adminUnlockUser(
         failedLoginCount: 0,
         modifiedAt: serverTimestamp(),
       });
-      return { success: true };
     }
-    await updateDoc(doc(db, 'system_users', safeId), {
-      isLocked: false,
-      failedLoginCount: 0,
-      modifiedAt: serverTimestamp(),
-    });
+    const sysId = mail ? emailToSystemUserId(mail) : safeId;
+    const sysRef = doc(db, 'system_users', sysId);
+    const sysSnap = await getDoc(sysRef);
+    if (sysSnap.exists()) {
+      await updateDoc(sysRef, {
+        isLocked: false,
+        failedLoginCount: 0,
+        modifiedAt: serverTimestamp(),
+      });
+    } else if (mail && isBootstrapped) {
+      const legacySnap = await getDocs(query(collection(db, 'system_users'), where('email', '==', mail)));
+      for (const d of legacySnap.docs) {
+        await updateDoc(d.ref, {
+          isLocked: false,
+          failedLoginCount: 0,
+          modifiedAt: serverTimestamp(),
+        });
+      }
+    }
     return { success: true };
   } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, `users/${safeId}`);
+    handleFirestoreError(err, OperationType.UPDATE, `system_users/${safeId}`);
   }
 }
 
@@ -503,19 +678,63 @@ export async function adminToggleActive(
     const userSnap = await getDoc(userRef);
     if (userSnap.exists()) {
       const currentActive = userSnap.data().isActive !== false;
+      const nextActive = !currentActive;
       await updateDoc(userRef, {
-        isActive: !currentActive,
+        isActive: nextActive,
         modifiedAt: serverTimestamp(),
       });
+      try {
+        const privSnap = await getDoc(doc(db, 'users', safeId, 'private', 'info'));
+        const mail = privSnap.exists() ? String(privSnap.data().email ?? '').toLowerCase() : '';
+        if (mail) {
+          const sysRef = doc(db, 'system_users', emailToSystemUserId(mail));
+          const sysSnap = await getDoc(sysRef);
+          if (sysSnap.exists()) {
+            await updateDoc(sysRef, { isActive: nextActive, modifiedAt: serverTimestamp() });
+          }
+          if (!nextActive) {
+            await syncAdminInvite(mail, false, session.email || session.username);
+          } else if (userSnap.data().role === 'admin') {
+            await syncAdminInvite(mail, true, session.email || session.username);
+          }
+          await sqlMirrorHelpers.upsertSystemUser({
+            id: emailToSystemUserId(mail),
+            username: String(userSnap.data().username ?? mail.split('@')[0]),
+            fullName: String(userSnap.data().fullName ?? mail.split('@')[0]),
+            email: mail,
+            role: userSnap.data().role === 'admin' ? 'admin' : 'user',
+            appRole: typeof userSnap.data().appRole === 'string' ? userSnap.data().appRole : undefined,
+            isActive: nextActive,
+            isLocked: userSnap.data().isLocked === true,
+          });
+        }
+      } catch {
+        // Ignore secondary sync failures
+      }
       return { success: true };
     }
     const sysRef = doc(db, 'system_users', safeId);
     const sysSnap = await getDoc(sysRef);
     if (!sysSnap.exists()) return { success: false, error: 'User not found.' };
+    const nextActive = !(sysSnap.data().isActive !== false);
     await updateDoc(sysRef, {
-      isActive: !(sysSnap.data().isActive !== false),
+      isActive: nextActive,
       modifiedAt: serverTimestamp(),
     });
+    const mail = String(sysSnap.data().email ?? '').toLowerCase();
+    if (mail) {
+      await syncAdminInvite(mail, nextActive && sysSnap.data().role === 'admin', session.email || session.username);
+      await sqlMirrorHelpers.upsertSystemUser({
+        id: safeId,
+        username: String(sysSnap.data().username ?? mail.split('@')[0]),
+        fullName: String(sysSnap.data().fullName ?? mail.split('@')[0]),
+        email: mail,
+        role: sysSnap.data().role === 'admin' ? 'admin' : 'user',
+        appRole: typeof sysSnap.data().appRole === 'string' ? sysSnap.data().appRole : undefined,
+        isActive: nextActive,
+        isLocked: sysSnap.data().isLocked === true,
+      });
+    }
     return { success: true };
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, `users/${safeId}`);
@@ -540,24 +759,60 @@ export async function adminUpdateUserRole(
         modifiedAt: serverTimestamp(),
       });
       const adminRef = doc(db, 'admins', safeId);
+      const privSnap = await getDoc(doc(db, 'users', safeId, 'private', 'info'));
+      const email = privSnap.exists() ? String(privSnap.data().email ?? '').toLowerCase() : '';
       if (newRole === 'admin') {
-        const privSnap = await getDoc(doc(db, 'users', safeId, 'private', 'info'));
-        const email = privSnap.exists() ? String(privSnap.data().email ?? '') : `${safeId}@citysavings.com.ph`;
         await setDoc(adminRef, {
           uid: safeId,
-          email: clampString(email, 160),
+          email: clampString(email || `${safeId}@citysavings.com.ph`, 160),
           grantedBy: clampString(session.email || session.username, 160),
           createdAt: serverTimestamp(),
         });
       } else {
         await deleteDoc(adminRef).catch(() => {});
       }
+      if (email) {
+        await syncAdminInvite(email, newRole === 'admin', session.email || session.username);
+        const sysRef = doc(db, 'system_users', emailToSystemUserId(email));
+        const sysSnap = await getDoc(sysRef);
+        if (sysSnap.exists()) {
+          await updateDoc(sysRef, {
+            role: newRole,
+            modifiedAt: serverTimestamp(),
+          });
+        }
+        await sqlMirrorHelpers.upsertSystemUser({
+          id: emailToSystemUserId(email),
+          username: String(userSnap.data().username ?? email.split('@')[0]),
+          fullName: String(userSnap.data().fullName ?? email.split('@')[0]),
+          email,
+          role: newRole,
+          isActive: userSnap.data().isActive !== false,
+          isLocked: userSnap.data().isLocked === true,
+        });
+      }
       return { success: true };
     }
-    await updateDoc(doc(db, 'system_users', safeId), {
+    const sysRef = doc(db, 'system_users', safeId);
+    const sysSnap = await getDoc(sysRef);
+    if (!sysSnap.exists()) return { success: false, error: 'User not found.' };
+    await updateDoc(sysRef, {
       role: newRole,
       modifiedAt: serverTimestamp(),
     });
+    const mail = String(sysSnap.data().email ?? '').toLowerCase();
+    if (mail) {
+      await syncAdminInvite(mail, newRole === 'admin', session.email || session.username);
+      await sqlMirrorHelpers.upsertSystemUser({
+        id: safeId,
+        username: String(sysSnap.data().username ?? mail.split('@')[0]),
+        fullName: String(sysSnap.data().fullName ?? mail.split('@')[0]),
+        email: mail,
+        role: newRole,
+        isActive: sysSnap.data().isActive !== false,
+        isLocked: sysSnap.data().isLocked === true,
+      });
+    }
     return { success: true };
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, `users/${safeId}`);
@@ -580,47 +835,135 @@ export async function createOrSyncSystemUser(data: {
   fullName: string;
   email: string;
   role: SystemRole;
+  appRole?: string;
+  scope?: string;
+  employeeNumber?: string;
+  isActive?: boolean;
+  isLocked?: boolean;
   password?: string;
 }): Promise<{ success: boolean; error?: string }> {
   const uid = auth.currentUser?.uid;
+  const actorEmail = (auth.currentUser?.email ?? BOOTSTRAPPED_ADMIN_EMAIL).toLowerCase();
   if (!uid) return { success: false, error: 'Not signed in.' };
 
   const uname = clampString(data.username.toLowerCase(), 80);
   const mail = clampString(data.email.toLowerCase(), 160);
   const fullName = clampString(data.fullName, 160);
-  const docId = sanitizeFirestoreId(`sys-${uname}`, `sys-${Date.now()}`);
+  const docId = emailToSystemUserId(mail);
+  const isActive = data.isActive !== false;
+  const isLocked = data.isLocked === true;
+  const isBootstrapped = actorEmail === BOOTSTRAPPED_ADMIN_EMAIL;
 
   try {
-    const existing = await getDocs(query(collection(db, 'system_users'), where('email', '==', mail)));
-    if (!existing.empty) {
-      const targetDoc = existing.docs[0];
-      await updateDoc(doc(db, 'system_users', targetDoc.id), {
+    const detRef = doc(db, 'system_users', docId);
+    const detSnap = await getDoc(detRef);
+
+    const updateFields: Record<string, unknown> = {
+      fullName,
+      role: data.role,
+      isActive,
+      isLocked,
+      modifiedAt: serverTimestamp(),
+    };
+    if (data.appRole !== undefined) updateFields.appRole = clampString(data.appRole, 80);
+    if (data.scope !== undefined) updateFields.scope = clampString(data.scope, 240);
+    if (data.employeeNumber !== undefined) updateFields.employeeNumber = clampString(data.employeeNumber, 64);
+
+    if (detSnap.exists()) {
+      await updateDoc(detRef, updateFields);
+    } else if (isBootstrapped) {
+      const legacySnap = await getDocs(query(collection(db, 'system_users'), where('email', '==', mail)));
+      if (!legacySnap.empty) {
+        for (const d of legacySnap.docs) {
+          await updateDoc(d.ref, updateFields);
+        }
+      } else {
+        const createPayload: Record<string, unknown> = {
+          id: docId,
+          username: uname,
+          fullName,
+          email: mail,
+          role: data.role,
+          isActive,
+          isLocked,
+          failedLoginCount: 0,
+          requiresPasswordChange: false,
+          ownerId: uid,
+          createdAt: new Date().toISOString(),
+          lastLogin: null,
+          modifiedAt: serverTimestamp(),
+        };
+        if (data.appRole) createPayload.appRole = clampString(data.appRole, 80);
+        if (data.scope) createPayload.scope = clampString(data.scope, 240);
+        if (data.employeeNumber) createPayload.employeeNumber = clampString(data.employeeNumber, 64);
+        await setDoc(detRef, createPayload);
+      }
+    } else {
+      const createPayload: Record<string, unknown> = {
+        id: docId,
+        username: uname,
         fullName,
+        email: mail,
         role: data.role,
-        isActive: true,
-        isLocked: false,
+        isActive,
+        isLocked,
+        failedLoginCount: 0,
+        requiresPasswordChange: false,
+        ownerId: uid,
+        createdAt: new Date().toISOString(),
+        lastLogin: null,
         modifiedAt: serverTimestamp(),
-      });
-      return { success: true };
+      };
+      if (data.appRole) createPayload.appRole = clampString(data.appRole, 80);
+      if (data.scope) createPayload.scope = clampString(data.scope, 240);
+      if (data.employeeNumber) createPayload.employeeNumber = clampString(data.employeeNumber, 64);
+      await setDoc(detRef, createPayload);
     }
 
-    await setDoc(doc(db, 'system_users', docId), {
+    await syncAdminInvite(mail, data.role === 'admin' && isActive && !isLocked, actorEmail);
+    await sqlMirrorHelpers.upsertSystemUser({
       id: docId,
       username: uname,
       fullName,
       email: mail,
       role: data.role,
-      isActive: true,
-      isLocked: false,
-      failedLoginCount: 0,
-      requiresPasswordChange: false,
-      ownerId: uid,
-      createdAt: new Date().toISOString(),
-      lastLogin: null,
-      modifiedAt: serverTimestamp(),
+      appRole: data.appRole,
+      scope: data.scope,
+      employeeNumber: data.employeeNumber,
+      isActive,
+      isLocked,
     });
     return { success: true };
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `system_users/${docId}`);
+  }
+}
+
+export async function adminDeleteSystemUserByEmail(email: string): Promise<{ success: boolean; error?: string }> {
+  const current = auth.currentUser;
+  if (!current) return { success: false, error: 'Not signed in.' };
+
+  const mail = clampString(email.toLowerCase(), 160);
+  if (!mail) return { success: false, error: 'Email is required.' };
+  if (mail === BOOTSTRAPPED_ADMIN_EMAIL) {
+    return { success: false, error: 'Cannot remove the primary system administrator.' };
+  }
+
+  const docId = emailToSystemUserId(mail);
+  const isBootstrapped = (current.email ?? '').toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL;
+
+  try {
+    await deleteDoc(doc(db, 'system_users', docId)).catch(() => {});
+    if (isBootstrapped) {
+      const legacySnap = await getDocs(query(collection(db, 'system_users'), where('email', '==', mail)));
+      for (const d of legacySnap.docs) {
+        await deleteDoc(d.ref).catch(() => {});
+      }
+    }
+    await syncAdminInvite(mail, false, current.email || BOOTSTRAPPED_ADMIN_EMAIL);
+    await sqlMirrorHelpers.deleteSystemUser(mail);
+    return { success: true };
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `system_users/${docId}`);
   }
 }

@@ -37,6 +37,19 @@ service cloud.firestore {
         (isVerified() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
     }
 
+    function adminInviteKey() {
+      return request.auth.token.email.lower().replace('[^a-z0-9_-]+', '_');
+    }
+
+    function hasActiveAdminInvite() {
+      return isVerified() &&
+        request.auth.token.email is string &&
+        adminInviteKey().size() >= 1 &&
+        adminInviteKey().size() <= 128 &&
+        exists(/databases/$(database)/documents/admin_invites/$(adminInviteKey())) &&
+        get(/databases/$(database)/documents/admin_invites/$(adminInviteKey())).data.isActive == true;
+    }
+
     function isOwner(userId) {
       return isVerified() && request.auth.uid == userId;
     }
@@ -80,6 +93,16 @@ service cloud.firestore {
         data.createdAt is timestamp;
     }
 
+    function isValidAdminInvite(data) {
+      return data.keys().hasAll(['emailKey', 'email', 'isActive', 'grantedBy', 'updatedAt']) &&
+        data.keys().hasOnly(['emailKey', 'email', 'isActive', 'grantedBy', 'updatedAt']) &&
+        isValidId(data.emailKey) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.isActive is bool &&
+        data.grantedBy is string && data.grantedBy.size() >= 1 && data.grantedBy.size() <= 160 &&
+        data.updatedAt is timestamp;
+    }
+
     function isValidUserDoc(data) {
       return data.keys().hasAll([
           'uid', 'username', 'fullName', 'role', 'isActive',
@@ -87,14 +110,17 @@ service cloud.firestore {
           'createdAt', 'modifiedAt'
         ]) &&
         data.keys().hasOnly([
-          'uid', 'username', 'fullName', 'role', 'isActive',
-          'isLocked', 'failedLoginCount', 'requiresPasswordChange',
+          'uid', 'username', 'fullName', 'role', 'appRole', 'scope', 'employeeNumber',
+          'isActive', 'isLocked', 'failedLoginCount', 'requiresPasswordChange',
           'createdAt', 'lastLogin', 'modifiedAt'
         ]) &&
         isValidId(data.uid) &&
         data.username is string && data.username.size() >= 1 && data.username.size() <= 80 &&
         data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 160 &&
         data.role in ['admin', 'user'] &&
+        (!('appRole' in data) || (data.appRole is string && data.appRole.size() <= 80)) &&
+        (!('scope' in data) || (data.scope is string && data.scope.size() <= 240)) &&
+        (!('employeeNumber' in data) || (data.employeeNumber is string && data.employeeNumber.size() <= 64)) &&
         data.isActive is bool &&
         data.isLocked is bool &&
         data.failedLoginCount is int && data.failedLoginCount >= 0 && data.failedLoginCount <= 100 &&
@@ -119,8 +145,8 @@ service cloud.firestore {
           'ownerId', 'createdAt', 'modifiedAt'
         ]) &&
         data.keys().hasOnly([
-          'id', 'username', 'fullName', 'email', 'role', 'isActive',
-          'isLocked', 'failedLoginCount', 'requiresPasswordChange',
+          'id', 'username', 'fullName', 'email', 'role', 'appRole', 'scope', 'employeeNumber',
+          'isActive', 'isLocked', 'failedLoginCount', 'requiresPasswordChange',
           'ownerId', 'createdAt', 'lastLogin', 'modifiedAt'
         ]) &&
         isValidId(data.id) &&
@@ -128,6 +154,9 @@ service cloud.firestore {
         data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 160 &&
         data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
         data.role in ['admin', 'user'] &&
+        (!('appRole' in data) || (data.appRole is string && data.appRole.size() <= 80)) &&
+        (!('scope' in data) || (data.scope is string && data.scope.size() <= 240)) &&
+        (!('employeeNumber' in data) || (data.employeeNumber is string && data.employeeNumber.size() <= 64)) &&
         data.isActive is bool &&
         data.isLocked is bool &&
         data.failedLoginCount is int && data.failedLoginCount >= 0 && data.failedLoginCount <= 100 &&
@@ -163,8 +192,8 @@ service cloud.firestore {
         data.canApproveIndependent is bool &&
         data.canApproveCAE is bool &&
         isValidId(data.ownerId) &&
-        isBoundedStringList(data.memberUids, 50) &&
-        isBoundedStringList(data.memberEmails, 50) &&
+        isBoundedStringList(data.memberUids, 100) &&
+        isBoundedStringList(data.memberEmails, 100) &&
         data.createdAt is timestamp &&
         data.modifiedAt is timestamp &&
         (!('employeeNumber' in data) || (data.employeeNumber is string && data.employeeNumber.size() <= 64)) &&
@@ -217,8 +246,8 @@ service cloud.firestore {
         data.cycleMonths is number && data.cycleMonths >= 1 && data.cycleMonths <= 120 &&
         data.defaultLead is string && data.defaultLead.size() <= 160 &&
         isValidId(data.ownerId) &&
-        isBoundedStringList(data.memberUids, 50) &&
-        isBoundedStringList(data.memberEmails, 50) &&
+        isBoundedStringList(data.memberUids, 100) &&
+        isBoundedStringList(data.memberEmails, 100) &&
         data.createdAt is timestamp &&
         data.modifiedAt is timestamp &&
         (!('auditDivisionId' in data) || (data.auditDivisionId is string && data.auditDivisionId.size() <= 64)) &&
@@ -276,8 +305,8 @@ service cloud.firestore {
         data.reportRef is string && data.reportRef.size() <= 64 &&
         data.executiveSummary is string && data.executiveSummary.size() <= 8000 &&
         isValidId(data.ownerId) &&
-        isBoundedStringList(data.memberUids, 50) &&
-        isBoundedStringList(data.memberEmails, 50) &&
+        isBoundedStringList(data.memberUids, 100) &&
+        isBoundedStringList(data.memberEmails, 100) &&
         data.createdAt is timestamp &&
         data.modifiedAt is timestamp &&
         (!('auditDivisionId' in data) || (data.auditDivisionId is string && data.auditDivisionId.size() <= 64)) &&
@@ -317,8 +346,8 @@ service cloud.firestore {
         data.testingProcedure is string && data.testingProcedure.size() <= 4000 &&
         data.conclusion is string && data.conclusion.size() <= 4000 &&
         isValidId(data.ownerId) &&
-        isBoundedStringList(data.memberUids, 50) &&
-        isBoundedStringList(data.memberEmails, 50) &&
+        isBoundedStringList(data.memberUids, 100) &&
+        isBoundedStringList(data.memberEmails, 100) &&
         data.createdAt is timestamp &&
         data.modifiedAt is timestamp &&
         (!('observations' in data) || (data.observations is string && data.observations.size() <= 4000)) &&
@@ -356,8 +385,8 @@ service cloud.firestore {
         data.status in ['Open', 'Action plan submitted', 'In remediation', 'Validated & Closed'] &&
         data.linkedNoteRef is string && data.linkedNoteRef.size() <= 40 &&
         isValidId(data.ownerId) &&
-        isBoundedStringList(data.memberUids, 50) &&
-        isBoundedStringList(data.memberEmails, 50) &&
+        isBoundedStringList(data.memberUids, 100) &&
+        isBoundedStringList(data.memberEmails, 100) &&
         data.createdAt is timestamp &&
         data.modifiedAt is timestamp &&
         (!('category' in data) || (data.category is string && data.category.size() <= 120)) &&
@@ -383,8 +412,8 @@ service cloud.firestore {
         data.status in ['Completed', 'Past due', 'Pending'] &&
         data.stageId is int && data.stageId >= 1 && data.stageId <= 7 &&
         isValidId(data.ownerId) &&
-        isBoundedStringList(data.memberUids, 50) &&
-        isBoundedStringList(data.memberEmails, 50) &&
+        isBoundedStringList(data.memberUids, 100) &&
+        isBoundedStringList(data.memberEmails, 100) &&
         data.createdAt is timestamp &&
         data.modifiedAt is timestamp &&
         (!('completedDate' in data) || (data.completedDate is string && data.completedDate.size() <= 64));
@@ -407,8 +436,8 @@ service cloud.firestore {
         data.uploadedBy is string && data.uploadedBy.size() <= 160 &&
         data.uploadedAt is string && data.uploadedAt.size() <= 64 &&
         isValidId(data.ownerId) &&
-        isBoundedStringList(data.memberUids, 50) &&
-        isBoundedStringList(data.memberEmails, 50) &&
+        isBoundedStringList(data.memberUids, 100) &&
+        isBoundedStringList(data.memberEmails, 100) &&
         data.createdAt is timestamp &&
         data.modifiedAt is timestamp;
     }
@@ -428,8 +457,8 @@ service cloud.firestore {
         data.actor is string && data.actor.size() <= 160 &&
         data.action is string && data.action.size() >= 1 && data.action.size() <= 400 &&
         isValidId(data.ownerId) &&
-        isBoundedStringList(data.memberUids, 50) &&
-        isBoundedStringList(data.memberEmails, 50) &&
+        isBoundedStringList(data.memberUids, 100) &&
+        isBoundedStringList(data.memberEmails, 100) &&
         data.createdAt is timestamp &&
         (!('detail' in data) || (data.detail is string && data.detail.size() <= 1000));
     }
@@ -465,8 +494,8 @@ service cloud.firestore {
         data.status in ['Overdue', 'In progress', 'Open', 'Extension requested', 'For validation', 'Closed'] &&
         data.actionPlanSummary is string && data.actionPlanSummary.size() <= 4000 &&
         isValidId(data.ownerId) &&
-        isBoundedStringList(data.memberUids, 50) &&
-        isBoundedStringList(data.memberEmails, 50) &&
+        isBoundedStringList(data.memberUids, 100) &&
+        isBoundedStringList(data.memberEmails, 100) &&
         data.createdAt is timestamp &&
         data.modifiedAt is timestamp &&
         (!('evidenceNote' in data) || (data.evidenceNote is string && data.evidenceNote.size() <= 2000)) &&
@@ -502,9 +531,28 @@ service cloud.firestore {
 
     match /admins/{userId} {
       allow get: if isVerified() && isValidId(userId) && (isOwner(userId) || isAdmin());
-      allow create, update: if isAdmin() && isValidId(userId) && isValidAdminDoc(incoming()) &&
-        incoming().uid == userId && incoming().createdAt == request.time;
-      allow delete: if isAdmin() && isValidId(userId);
+      allow create: if isVerified() && isValidId(userId) && isValidAdminDoc(incoming()) &&
+        incoming().uid == userId &&
+        incoming().createdAt == request.time && (
+          isAdmin() ||
+          (isOwner(userId) && hasActiveAdminInvite() && incoming().email.lower() == request.auth.token.email.lower())
+        );
+      allow update: if isAdmin() && isValidId(userId) && isValidAdminDoc(incoming()) &&
+        incoming().uid == userId &&
+        incoming().createdAt == request.time;
+      allow delete: if isVerified() && isValidId(userId) && (isAdmin() || isOwner(userId));
+    }
+
+    match /admin_invites/{emailKey} {
+      allow get: if isVerified() && isValidId(emailKey) && (
+        isAdmin() ||
+        (request.auth.token.email is string && emailKey == adminInviteKey())
+      );
+      allow list: if false;
+      allow create, update: if isAdmin() && isValidId(emailKey) && isValidAdminInvite(incoming()) &&
+        incoming().emailKey == emailKey &&
+        incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(emailKey);
     }
 
     match /users/{userId} {
@@ -514,8 +562,13 @@ service cloud.firestore {
         incoming().uid == userId &&
         incoming().createdAt == request.time &&
         incoming().modifiedAt == request.time &&
-        existsAfter(/databases/$(database)/documents/users/$(userId)/private/info) &&
-        ((isOwner(userId) && incoming().role == 'user' && incoming().isActive == true && incoming().isLocked == false) || isAdmin());
+        existsAfter(/databases/$(database)/documents/users/$(userId)/private/info) && (
+          isAdmin() ||
+          (isOwner(userId) && incoming().isActive == true && incoming().isLocked == false && (
+            incoming().role == 'user' ||
+            (incoming().role == 'admin' && hasActiveAdminInvite() && existsAfter(/databases/$(database)/documents/admins/$(userId)))
+          ))
+        );
       allow update: if isVerified() && isValidId(userId) && isValidUserDoc(incoming()) &&
         incoming().uid == existing().uid &&
         incoming().createdAt == existing().createdAt &&
@@ -523,10 +576,15 @@ service cloud.firestore {
         (
           isAdmin() ||
           (isOwner(userId) &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['username', 'fullName', 'lastLogin', 'modifiedAt']) &&
-            incoming().role == existing().role &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'username', 'fullName', 'role', 'appRole', 'scope', 'employeeNumber', 'lastLogin', 'modifiedAt'
+            ]) &&
             incoming().isActive == existing().isActive &&
-            incoming().isLocked == existing().isLocked)
+            incoming().isLocked == existing().isLocked && (
+              incoming().role == existing().role ||
+              (incoming().role == 'admin' && hasActiveAdminInvite() && existsAfter(/databases/$(database)/documents/admins/$(userId))) ||
+              (incoming().role == 'user' && !hasActiveAdminInvite() && !isBootstrappedAdmin() && !existsAfter(/databases/$(database)/documents/admins/$(userId)))
+            ))
         );
       allow delete: if isAdmin() && isValidId(userId);
 
@@ -543,7 +601,8 @@ service cloud.firestore {
     }
 
     match /system_users/{userId} {
-      allow get: if isVerified() && isValidId(userId) && (isAdmin() || existing().email == request.auth.token.email);
+      allow get: if isVerified() && isValidId(userId) &&
+        (isAdmin() || (resource != null && existing().email == request.auth.token.email));
       allow list: if isVerified() && (isBootstrappedAdmin() || existing().email == request.auth.token.email);
       allow create: if isAdmin() && isValidId(userId) && isValidSystemUser(incoming()) &&
         incoming().id == userId &&
@@ -742,7 +801,14 @@ service cloud.firestore {
           incoming().createdAt == request.time &&
           incoming().modifiedAt == request.time &&
           isEngagementMember(engagementId);
-        allow update: if false;
+        allow update: if isAdmin() && isValidId(engagementId) && isValidId(fileId) &&
+          isValidAuditFile(incoming()) &&
+          incoming().id == existing().id &&
+          incoming().engagementId == existing().engagementId &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().modifiedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['memberEmails', 'modifiedAt']);
         allow delete: if isAdmin() && isValidId(engagementId) && isValidId(fileId);
       }
 
@@ -756,7 +822,13 @@ service cloud.firestore {
           incoming().ownerId == request.auth.uid &&
           incoming().createdAt == request.time &&
           isEngagementMember(engagementId);
-        allow update: if false;
+        allow update: if isAdmin() && isValidId(engagementId) && isValidId(logId) &&
+          isValidActivityLog(incoming()) &&
+          incoming().id == existing().id &&
+          incoming().engagementId == existing().engagementId &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['memberEmails']);
         allow delete: if isAdmin() && isValidId(engagementId) && isValidId(logId);
       }
     }

@@ -5,7 +5,11 @@ import {
   normalizeLegacyIdentifier,
 } from '../utils/identifiers';
 import { formatAuditDate, getCurrentAccountEmail } from '../utils/auditMetadata';
-import { fetchMasterData, saveMasterData } from '../utils/db';
+import {
+  fetchMasterData,
+  saveMasterData,
+  syncWorkspaceMembershipForEmail,
+} from '../utils/db';
 import {
   AuditEngagement,
   IssueRegisterItem,
@@ -23,19 +27,16 @@ import {
   sanitizeText,
   exportAccessListCsv,
   downloadCsv,
-  processFailedLogin,
   unlockAccount,
-  getPasswordExpiryState,
-  validatePasswordStrength,
-  generateTemporaryPassword,
-  scorePasswordStrength,
-  PASSWORD_STRENGTH_LABELS,
-  PASSWORD_STRENGTH_COLORS,
-  isUsernameTaken,
-  genericAuthError,
   AccessListRow,
 } from '../utils/security';
-import { createOrSyncSystemUser } from '../utils/authStore';
+import {
+  adminDeleteSystemUserByEmail,
+  adminUnlockUser,
+  BOOTSTRAPPED_ADMIN_EMAIL,
+  createOrSyncSystemUser,
+  loadSession,
+} from '../utils/authStore';
 import { formatDateForDisplay, toDateInputValue } from '../utils/date';
 import { getAuditCycleMonths, getAuditRiskLevel } from '../utils/riskScale';
 import {
@@ -3020,6 +3021,8 @@ export const MasterDataSetupAccessView: React.FC<{
 
   // ── Access Users state & sync with DB profiles ─────────────────────────────
   const [accessUsers, setAccessUsers] = useState(DEFAULT_ACCESS_USERS);
+  const [accessRegistryLoaded, setAccessRegistryLoaded] = useState(false);
+  const [hasSavedRegistry, setHasSavedRegistry] = useState(false);
   const [userSearchQuery, setUserSearchQuery] = useState('');
   const [userTypeFilter, setUserTypeFilter] = useState('All types');
   const [userRoleFilter, setUserRoleFilter] = useState('All roles');
@@ -3075,10 +3078,12 @@ export const MasterDataSetupAccessView: React.FC<{
       });
     });
     fetchMasterData('setup_checklist', DEFAULT_SETUP_ITEMS).then(setSetupItems);
-    fetchMasterData('access_users_registry', DEFAULT_ACCESS_USERS).then((saved) => {
+    fetchMasterData<typeof DEFAULT_ACCESS_USERS | null>('access_users_registry', null).then((saved) => {
       if (saved && Array.isArray(saved) && saved.length > 0) {
         setAccessUsers(saved);
+        setHasSavedRegistry(true);
       }
+      setAccessRegistryLoaded(true);
     });
     fetchMasterData('role_permissions_matrix', DEFAULT_ROLE_PERMISSIONS_MATRIX).then((saved) => {
       if (saved && Array.isArray(saved) && saved.length > 0) {
@@ -3087,69 +3092,99 @@ export const MasterDataSetupAccessView: React.FC<{
     });
   }, []);
 
-  // Sync access users whenever userProfiles from Supabase change
+  // Merge Firestore userProfiles into accessUsers without overwriting custom scopes/emails or restoring removed defaults
   useEffect(() => {
-    if (userProfiles && userProfiles.length > 0) {
+    if (!accessRegistryLoaded) return;
+    if (!userProfiles || userProfiles.length === 0) return;
+
+    setAccessUsers((prev) => {
       const dbUsers = userProfiles.map((p) => {
-        // Priority for user email:
-        // 1. Explicit profile email
-        // 2. Existing email in accessUsers or saved registry
-        // 3. Fallback CitySavings Bank corporate email
-        const existing = accessUsers.find(
-          (u) => u.id === p.id || u.name.toLowerCase() === p.name.toLowerCase()
+        const existing = prev.find(
+          (u) =>
+            u.id === p.id ||
+            (p.email && u.email && u.email.toLowerCase() === p.email.toLowerCase()) ||
+            u.name.toLowerCase() === p.name.toLowerCase()
         );
-        const resolvedEmail =
+        const resolvedEmail = (
           p.email ||
           existing?.email ||
-          `${p.name.toLowerCase().replace(/[^a-z0-9]/g, '.')}@citysavings.com.ph`;
+          `${p.name.toLowerCase().replace(/[^a-z0-9]/g, '.')}@citysavings.com.ph`
+        ).toLowerCase();
+
+        const resolvedRoles = (() => {
+          if (p.headerSubtitle) {
+            const configured = roleDefinitions.find(
+              (role) => role.name.toLowerCase() === p.headerSubtitle?.toLowerCase()
+            );
+            return [configured?.name ?? normalizeRole(p.headerSubtitle)];
+          }
+          if (existing?.roles && existing.roles.length > 0) return existing.roles;
+          if (p.canApproveCAE) return ['Chief Audit Executive'];
+          if (p.canApproveHead) return ['Chief Audit Executive'];
+          if (p.canApproveIndependent) return ['Audit Division Head'];
+          if (p.roleTitle?.toLowerCase().includes('division head')) return ['Audit Division Head'];
+          if (p.roleTitle?.toLowerCase().includes('supervising') || p.roleTitle?.toLowerCase().includes('audit supervisor')) return ['Audit Supervisor'];
+          if (p.roleTitle?.toLowerCase().includes('charge') || p.roleTitle?.toLowerCase().includes('aic')) return ['Audit-in-Charge'];
+          if (p.roleTitle?.toLowerCase().includes('manager')) return ['Audit Division Head'];
+          if (p.roleTitle?.toLowerCase().includes('auditee')) return ['Issue Owner (auditee)'];
+          return ['Assisting Auditor'];
+        })();
+
+        const resolvedStatus =
+          p.accountStatus === 'Inactive' || p.accountStatus === 'Deactivated'
+            ? 'Suspended'
+            : existing?.status === 'Suspended' && !p.accountStatus
+            ? 'Suspended'
+            : 'Active';
 
         return {
+          ...(existing ?? {}),
           id: p.id,
           name: p.name,
-          title: `${p.roleTitle || 'Internal Auditor'} · ${p.department || 'Internal Audit'}`,
+          title: existing?.title || `${p.roleTitle || 'Internal Auditor'} · ${p.department || 'Internal Audit'}`,
           email: resolvedEmail,
-          roles: (() => {
-            if (p.headerSubtitle) {
-              const configured = roleDefinitions.find(
-                (role) => role.name.toLowerCase() === p.headerSubtitle?.toLowerCase()
-              );
-              return [configured?.name ?? normalizeRole(p.headerSubtitle)];
-            }
-            if (p.canApproveCAE) return ['Chief Audit Executive'];
-            if (p.canApproveHead) return ['Chief Audit Executive'];
-            if (p.canApproveIndependent) return ['Audit Division Head'];
-            if (p.roleTitle?.toLowerCase().includes('division head')) return ['Audit Division Head'];
-            if (p.roleTitle?.toLowerCase().includes('supervising') || p.roleTitle?.toLowerCase().includes('audit supervisor')) return ['Audit Supervisor'];
-            if (p.roleTitle?.toLowerCase().includes('charge') || p.roleTitle?.toLowerCase().includes('aic')) return ['Audit-in-Charge'];
-            if (p.roleTitle?.toLowerCase().includes('manager')) return ['Audit Division Head'];
-            if (p.roleTitle?.toLowerCase().includes('auditee')) return ['Issue Owner (auditee)'];
-            return ['Assisting Auditor'];
-          })(),
-          scope: p.department === 'Internal Audit' ? 'Full access' : `${p.department} operations`,
-          status: p.accountStatus || 'Active',
-          employeeNumber: p.employeeNumber || 'EMP-DB',
-          dateGranted: '2026-01-15',
-          lastModified: '2026-01-15',
-          lastLoginDate: '—',
+          roles: resolvedRoles,
+          scope: existing?.scope || (p.department === 'Internal Audit' ? 'Full access' : `${p.department} operations`),
+          status: resolvedStatus,
+          employeeNumber: p.employeeNumber || (existing as any)?.employeeNumber || 'EMP-DB',
+          dateGranted: (existing as any)?.dateGranted || '2026-01-15',
+          lastModified: (existing as any)?.lastModified || '2026-01-15',
+          lastLoginDate: p.lastLoginDate || (existing as any)?.lastLoginDate || '—',
           failedLoginCount: p.failedLoginCount || 0,
           isLocked: p.isLocked || false,
-          requiresPasswordChange: p.requiresPasswordChange || false,
-          mfaEnabled: p.mfaEnabled || false,
-          isPrivileged: p.isPrivileged || false,
+          requiresPasswordChange: false,
+          mfaEnabled: p.mfaEnabled ?? (existing as any)?.mfaEnabled ?? false,
+          isPrivileged:
+            p.isPrivileged ??
+            (existing as any)?.isPrivileged ??
+            resolvedRoles.some((r) => {
+              const norm = normalizeRole(r);
+              return norm === 'System administrator' || norm === 'Chief Audit Executive';
+            }),
         };
       });
 
-      // Merge ensuring DB profiles are prioritized and baseline accounts are retained
       const merged: any[] = [...dbUsers];
-      DEFAULT_ACCESS_USERS.forEach((def) => {
-        if (!merged.some((m) => m.name.toLowerCase() === def.name.toLowerCase() || m.id === def.id)) {
+      const extraSource = hasSavedRegistry ? prev : DEFAULT_ACCESS_USERS;
+      extraSource.forEach((def) => {
+        if (
+          !merged.some(
+            (m) =>
+              m.id === def.id ||
+              (def.email && m.email && m.email.toLowerCase() === def.email.toLowerCase()) ||
+              m.name.toLowerCase() === def.name.toLowerCase()
+          )
+        ) {
           merged.push(def);
         }
       });
-      setAccessUsers(merged as any);
-      saveMasterData('access_users_registry', merged);
-    }
-  }, [userProfiles, roleDefinitions]);
+
+      if (!hasSavedRegistry) {
+        saveMasterData('access_users_registry', merged);
+      }
+      return merged as any;
+    });
+  }, [userProfiles, roleDefinitions, accessRegistryLoaded, hasSavedRegistry]);
 
   // ── Access tab local security state ────────────────────────────────────────
   const [accessNotice, setAccessNotice] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
@@ -3159,22 +3194,47 @@ export const MasterDataSetupAccessView: React.FC<{
   const [newUserEmployeeNo, setNewUserEmployeeNo] = useState('');
   const [newUserRole, setNewUserRole] = useState('Assisting Auditor');
   const [newUserScope, setNewUserScope] = useState('');
-  const [newUserPassword, setNewUserPassword] = useState('');
-  const [showNewUserPassword, setShowNewUserPassword] = useState(false);
   const [newUserNameError, setNewUserNameError] = useState('');
   const [newUserFormError, setNewUserFormError] = useState('');
-  const [resetTargetId, setResetTargetId] = useState<string | null>(null);
-  const [generatedTempPw, setGeneratedTempPw] = useState('');
-  const [showTempPw, setShowTempPw] = useState(false);
-  const [loginSimUser, setLoginSimUser] = useState('');
-  const [loginSimPw, setLoginSimPw] = useState('');
-  const [showLoginSimPw, setShowLoginSimPw] = useState(false);
-  const [loginSimError, setLoginSimError] = useState('');
-  const [loginSimSuccess, setLoginSimSuccess] = useState('');
 
   const notifyAccess = (type: 'success' | 'error', msg: string) => {
     setAccessNotice({ type, msg });
     setTimeout(() => setAccessNotice(null), 4500);
+  };
+
+  const syncUserAuthAndWorkspace = async (params: {
+    fullName: string;
+    email: string;
+    roleName: string;
+    scope?: string;
+    employeeNumber?: string;
+    isActive: boolean;
+    isLocked?: boolean;
+  }) => {
+    const mail = params.email.trim().toLowerCase();
+    if (!mail) return;
+    const accessRole = normalizeRole(params.roleName);
+    const isSysAdmin = accessRole === 'System administrator';
+    try {
+      const res = await createOrSyncSystemUser({
+        username: mail.split('@')[0],
+        fullName: params.fullName,
+        email: mail,
+        role: isSysAdmin ? 'admin' : 'user',
+        appRole: params.roleName,
+        scope: params.scope || 'Assigned engagements',
+        employeeNumber: params.employeeNumber,
+        isActive: params.isActive,
+        isLocked: Boolean(params.isLocked),
+      });
+      if (res.success) {
+        await syncWorkspaceMembershipForEmail(mail, params.isActive && !params.isLocked);
+      } else if (res.error) {
+        notifyAccess('error', res.error);
+      }
+    } catch (err) {
+      notifyAccess('error', err instanceof Error ? err.message : 'Failed to synchronize user permissions.');
+    }
   };
 
   // ── Handlers: Entity Types ─────────────────────────────────────────────────
@@ -3279,7 +3339,7 @@ export const MasterDataSetupAccessView: React.FC<{
     setEditFormPrivileged(Boolean((usr as any).isPrivileged));
   };
 
-  const handleSaveEditAccess = (e: React.FormEvent) => {
+  const handleSaveEditAccess = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingAccessUser) return;
 
@@ -3288,22 +3348,33 @@ export const MasterDataSetupAccessView: React.FC<{
     const canApproveHead = accessRole === 'Chief Audit Executive' || accessRole === 'System administrator';
     const canApproveIndependent = ['Audit Division Head', 'Audit Supervisor', 'Independent Reviewer'].includes(accessRole);
     const canApproveCAE = accessRole === 'Chief Audit Executive';
-    const updatedEmail = editFormEmail.trim() || editingAccessUser.email;
+    const previousEmail = (editingAccessUser.email || '').trim().toLowerCase();
+    const updatedEmail = (editFormEmail.trim() || editingAccessUser.email || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(updatedEmail)) {
+      notifyAccess('error', 'Enter a valid Google email address.');
+      return;
+    }
 
+    const updatedName = editFormName.trim() || editingAccessUser.name;
+    const updatedScope = editFormScope.trim() || editingAccessUser.scope || 'Assigned engagements';
+    const updatedEmpNo = editFormEmpNo.trim() || editingAccessUser.employeeNumber;
+    const isActive = editFormStatus === 'Active';
+
+    setHasSavedRegistry(true);
     setAccessUsers((prev) => {
       const updated = prev.map((item) => {
         if (item.id !== targetId) return item;
         return {
           ...item,
-          name: editFormName.trim() || item.name,
+          name: updatedName,
           email: updatedEmail,
           roles: [editFormRole],
           title: `${editFormRole} · Internal Audit`,
-          scope: editFormScope.trim() || item.scope,
+          scope: updatedScope,
           status: editFormStatus,
-          employeeNumber: editFormEmpNo.trim() || item.employeeNumber,
+          employeeNumber: updatedEmpNo,
           mfaEnabled: editFormMfa,
-          isPrivileged: editFormPrivileged,
+          isPrivileged: editFormPrivileged || accessRole === 'System administrator',
           lastModified: new Date().toISOString().slice(0, 10),
         } as any;
       });
@@ -3314,23 +3385,40 @@ export const MasterDataSetupAccessView: React.FC<{
     if (onUpdateUserProfile) {
       onUpdateUserProfile({
         id: targetId,
-        name: editFormName.trim() || editingAccessUser.name,
+        name: updatedName,
         email: updatedEmail,
         roleTitle: `${editFormRole} (Internal Audit)`,
-        fullLabel: `${editFormName.trim() || editingAccessUser.name} – ${editFormRole}`,
+        fullLabel: `${updatedName} – ${editFormRole}`,
         headerSubtitle: editFormRole,
         department: 'Internal Audit',
         canApproveHead,
         canApproveIndependent,
         canApproveCAE,
-        accountStatus: editFormStatus === 'Active' ? 'Active' : 'Inactive',
-        employeeNumber: editFormEmpNo.trim() || editingAccessUser.employeeNumber,
+        accountStatus: isActive ? 'Active' : 'Inactive',
+        employeeNumber: updatedEmpNo,
+        isLocked: Boolean(editingAccessUser.isLocked),
+        requiresPasswordChange: false,
         mfaEnabled: editFormMfa,
-        isPrivileged: editFormPrivileged,
+        isPrivileged: editFormPrivileged || accessRole === 'System administrator',
       });
     }
 
-    notifyAccess('success', `Access rights and account profile updated for "${editFormName.trim() || editingAccessUser.name}".`);
+    if (previousEmail && previousEmail !== updatedEmail) {
+      await adminDeleteSystemUserByEmail(previousEmail);
+      await syncWorkspaceMembershipForEmail(previousEmail, false);
+    }
+
+    await syncUserAuthAndWorkspace({
+      fullName: updatedName,
+      email: updatedEmail,
+      roleName: editFormRole,
+      scope: updatedScope,
+      employeeNumber: updatedEmpNo,
+      isActive,
+      isLocked: Boolean(editingAccessUser.isLocked),
+    });
+
+    notifyAccess('success', `Access rights and Google sign-in permissions updated for "${updatedName}".`);
     setEditingAccessUser(null);
   };
 
@@ -3691,122 +3779,76 @@ export const MasterDataSetupAccessView: React.FC<{
     notifyAccess('success', 'LAC-3: User access list exported as CSV for UAM review.');
   };
 
-  const handleSimulateLogin = () => {
-    setLoginSimError('');
-    setLoginSimSuccess('');
-    if (!loginSimUser.trim() || !loginSimPw.trim()) {
-      setLoginSimError(genericAuthError());
-      return;
-    }
-    const found = accessUsers.find(
-      (u) => u.email.split('@')[0].toLowerCase() === loginSimUser.trim().toLowerCase()
-    );
-    if (!found) {
-      setLoginSimError(genericAuthError());
-      return;
-    }
-    if ((found as any).isLocked) {
-      setLoginSimError(
-        'Your account has been locked due to multiple failed login attempts. Please contact your system administrator to unlock.'
-      );
-      return;
-    }
-    if (loginSimPw !== 'CorrectPw!1') {
-      const { newCount, shouldLock } = processFailedLogin((found as any).failedLoginCount || 0);
-      setAccessUsers((prev) =>
-        prev.map((u) =>
-          u.id === found.id
-            ? { ...u, failedLoginCount: newCount, isLocked: shouldLock } as any
-            : u
-        )
-      );
-      if (shouldLock) {
-        setLoginSimError(
-          `IA-8/IA-9: Account "${found.name}" has been locked after ${newCount} consecutive failed attempts. Administrator intervention required to unlock. — ${genericAuthError()}`
-        );
-      } else {
-        setLoginSimError(`${genericAuthError()} (Attempt ${newCount} of 3)`);
-      }
-      return;
-    }
-    setAccessUsers((prev) =>
-      prev.map((u) =>
-        u.id === found.id
-          ? { ...u, failedLoginCount: 0, isLocked: false, lastLoginDate: new Date().toISOString() } as any
-          : u
-      )
-    );
-    setLoginSimSuccess(`IA-1/SM-4: Login successful. Session token issued. Previous sessions revoked. Welcome, ${found.name}.`);
-  };
-
-  const handleAdminUnlock = (userId: string, userName: string) => {
+  const handleAdminUnlock = async (userId: string, userName: string, email?: string) => {
     const reset = unlockAccount();
-    setAccessUsers((prev) =>
-      prev.map((u) => (u.id === userId ? { ...u, ...reset } as any : u))
-    );
-    notifyAccess('success', `IA-9: Account "${userName}" has been unlocked by the administrator. Failed login counter reset.`);
-  };
-
-  const handleGenerateTempPw = (userId: string) => {
-    const tmp = generateTemporaryPassword();
-    setGeneratedTempPw(tmp);
-    setResetTargetId(userId);
-    setShowTempPw(false);
-    setAccessUsers((prev) =>
-      prev.map((u) => (u.id === userId ? { ...u, requiresPasswordChange: true } as any : u))
-    );
+    let targetStatus = 'Active';
+    setHasSavedRegistry(true);
+    setAccessUsers((prev) => {
+      const updated = prev.map((u) => {
+        if (u.id !== userId) return u;
+        targetStatus = u.status || 'Active';
+        return { ...u, ...reset } as any;
+      });
+      saveMasterData('access_users_registry', updated);
+      return updated;
+    });
+    const session = loadSession();
+    if (session) {
+      await adminUnlockUser(session, userId, email);
+    }
+    if (email && targetStatus === 'Active') {
+      await syncWorkspaceMembershipForEmail(email, true);
+    }
+    notifyAccess('success', `IA-9: Account "${userName}" has been unlocked by the administrator.`);
   };
 
   const handleAddUser = async () => {
     setNewUserNameError('');
     setNewUserFormError('');
-    if (!newUserName.trim() || !newUserEmail.trim()) {
-      const err = 'Full name and email address are required.';
+    const trimmedName = newUserName.trim();
+    const normalizedEmail = newUserEmail.trim().toLowerCase();
+    if (!trimmedName || !normalizedEmail) {
+      const err = 'Full name and Google email address are required.';
       setNewUserFormError(err);
       notifyAccess('error', err);
       return;
     }
-    const existingUsernames = accessUsers.map((u) => u.email.split('@')[0]);
-    const candidateUsername = newUserEmail.split('@')[0];
-    if (isUsernameTaken(candidateUsername, existingUsernames)) {
-      const err = `IA-2: Username "${candidateUsername}" already exists. Each user must have a unique username/ID.`;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      const err = 'Enter a valid Google email address.';
+      setNewUserNameError(err);
+      setNewUserFormError(err);
+      return;
+    }
+    const existingEmails = new Set(accessUsers.map((u) => u.email.trim().toLowerCase()));
+    if (existingEmails.has(normalizedEmail)) {
+      const err = `IA-2: Google email "${normalizedEmail}" is already registered.`;
       setNewUserNameError(err);
       setNewUserFormError(err);
       return;
     }
     const newUserAccessRole = normalizeRole(newUserRole);
-    if (newUserPassword) {
-      const isPrivileged = newUserAccessRole === 'System administrator';
-      const { valid, violations } = validatePasswordStrength(newUserPassword, isPrivileged);
-      if (!valid) {
-        const hint = !/[^a-zA-Z0-9]/.test(newUserPassword)
-          ? ` (Tip: add a special symbol like "!" or "@" to your password, e.g. ${newUserPassword}!)`
-          : '';
-        const errMsg = `Password does not meet BSP/BSSC policy: ${violations[0]}${hint}`;
-        setNewUserFormError(errMsg);
-        notifyAccess('error', `PM-1/PM-2: ${violations[0]}`);
-        return;
-      }
-    }
+    const scopeValue = newUserScope.trim() || 'Assigned engagements';
+    const empNumber = newUserEmployeeNo.trim() || `EMP-${Date.now().toString().slice(-4)}`;
     const newAcc = {
       id: formatIdentifier('IA', accessUsers.length + 1).toLowerCase(),
-      name: newUserName.trim(),
+      name: trimmedName,
       title: `${newUserRole} · Internal Audit`,
-      email: newUserEmail.trim(),
+      email: normalizedEmail,
       roles: [newUserRole],
-      scope: newUserScope.trim() || 'Assigned engagements',
+      scope: scopeValue,
       status: 'Active',
-      employeeNumber: newUserEmployeeNo.trim() || `EMP-${Date.now().toString().slice(-4)}`,
+      employeeNumber: empNumber,
       dateGranted: new Date().toISOString().slice(0, 10),
       lastModified: new Date().toISOString().slice(0, 10),
       lastLoginDate: '—',
       failedLoginCount: 0,
       isLocked: false,
-      requiresPasswordChange: true,
+      requiresPasswordChange: false,
       passwordLastChanged: null,
       mfaEnabled: false,
       isPrivileged: newUserAccessRole === 'System administrator',
     };
+    setHasSavedRegistry(true);
     setAccessUsers((prev) => {
       const updated = [...prev, newAcc as any];
       saveMasterData('access_users_registry', updated);
@@ -3832,46 +3874,65 @@ export const MasterDataSetupAccessView: React.FC<{
         accountStatus: 'Active',
         failedLoginCount: 0,
         isLocked: false,
-        requiresPasswordChange: true,
+        requiresPasswordChange: false,
         mfaEnabled: false,
         isPrivileged: newUserAccessRole === 'System administrator',
       });
     }
 
-    // Also sync to system_users table so user can log in at the root sign-in screen
-    await createOrSyncSystemUser({
-      username: candidateUsername,
+    await syncUserAuthAndWorkspace({
       fullName: newAcc.name,
       email: newAcc.email,
-      role: newUserAccessRole === 'System administrator' ? 'admin' : 'user',
-      password: newUserPassword || undefined,
+      roleName: newUserRole,
+      scope: scopeValue,
+      employeeNumber: empNumber,
+      isActive: true,
+      isLocked: false,
     });
 
-    notifyAccess('success', `IA-1/PM-3: User "${newUserName.trim()}" created with role "${newUserRole}". Temporary password issued.`);
-    setNewUserName(''); setNewUserEmail(''); setNewUserEmployeeNo('');
-    setNewUserRole('Assisting Auditor'); setNewUserScope(''); setNewUserPassword('');
+    notifyAccess(
+      'success',
+      `User "${trimmedName}" (${normalizedEmail}) added with role "${newUserRole}". They can now sign in with Google.`
+    );
+    setNewUserName('');
+    setNewUserEmail('');
+    setNewUserEmployeeNo('');
+    setNewUserRole('Assisting Auditor');
+    setNewUserScope('');
     setNewUserFormError('');
     setShowAddUserForm(false);
   };
 
-  const handleUpdateUserRole = (userId: string, newRole: string) => {
+  const handleUpdateUserRole = async (userId: string, newRole: string) => {
+    const targetUser = accessUsers.find((u) => u.id === userId);
+    if (!targetUser) return;
+
     const accessRole = normalizeRole(newRole);
+    const isPrivileged = accessRole === 'System administrator' || accessRole === 'Chief Audit Executive';
     const updatedUsers = accessUsers.map((item) =>
       item.id === userId
-        ? { ...item, roles: [newRole], title: `${newRole} · Internal Audit` }
+        ? {
+            ...item,
+            roles: [newRole],
+            title: `${newRole} · Internal Audit`,
+            isPrivileged,
+            lastModified: new Date().toISOString().slice(0, 10),
+          }
         : item
     );
+    setHasSavedRegistry(true);
     setAccessUsers(updatedUsers);
+    saveMasterData('access_users_registry', updatedUsers);
 
-    const targetUser = accessUsers.find((u) => u.id === userId);
-    if (onUpdateUserProfile && targetUser) {
-      const canApproveHead = accessRole === 'Chief Audit Executive' || accessRole === 'System administrator';
-      const canApproveIndependent = ['Audit Division Head', 'Audit Supervisor', 'Independent Reviewer'].includes(accessRole);
-      const canApproveCAE = accessRole === 'Chief Audit Executive';
+    const canApproveHead = accessRole === 'Chief Audit Executive' || accessRole === 'System administrator';
+    const canApproveIndependent = ['Audit Division Head', 'Audit Supervisor', 'Independent Reviewer'].includes(accessRole);
+    const canApproveCAE = accessRole === 'Chief Audit Executive';
 
+    if (onUpdateUserProfile) {
       onUpdateUserProfile({
         id: userId,
         name: targetUser.name,
+        email: targetUser.email,
         roleTitle: `${newRole} (Internal Audit)`,
         fullLabel: `${targetUser.name} – ${newRole}`,
         headerSubtitle: newRole,
@@ -3881,14 +3942,111 @@ export const MasterDataSetupAccessView: React.FC<{
         canApproveCAE,
         accountStatus: targetUser.status === 'Active' ? 'Active' : 'Inactive',
         employeeNumber: (targetUser as any).employeeNumber,
+        isLocked: Boolean((targetUser as any).isLocked),
+        requiresPasswordChange: false,
+        mfaEnabled: Boolean((targetUser as any).mfaEnabled),
+        isPrivileged,
       });
     }
-    saveMasterData('access_users_registry', updatedUsers);
-    notifyAccess('success', `Role for "${targetUser?.name || 'User'}" updated to "${newRole}".`);
+
+    await syncUserAuthAndWorkspace({
+      fullName: targetUser.name,
+      email: targetUser.email,
+      roleName: newRole,
+      scope: targetUser.scope,
+      employeeNumber: (targetUser as any).employeeNumber,
+      isActive: targetUser.status === 'Active',
+      isLocked: Boolean((targetUser as any).isLocked),
+    });
+
+    notifyAccess('success', `Role for "${targetUser.name}" updated to "${newRole}".`);
   };
 
-  const getUserExpiryState = (u: any) => {
-    return getPasswordExpiryState(u.passwordLastChanged || null, u.mfaEnabled || false);
+  const handleToggleSuspendUser = async (usr: any) => {
+    const mail = (usr.email || '').trim().toLowerCase();
+    if (mail === BOOTSTRAPPED_ADMIN_EMAIL) {
+      notifyAccess('error', 'The primary system administrator account cannot be suspended.');
+      return;
+    }
+
+    const nextStatus = usr.status === 'Active' ? 'Suspended' : 'Active';
+    const roleName = usr.roles?.[0] || 'Assisting Auditor';
+    const normR = normalizeRole(roleName);
+
+    setHasSavedRegistry(true);
+    setAccessUsers((prev) => {
+      const updated = prev.map((item) =>
+        item.id === usr.id
+          ? { ...item, status: nextStatus, lastModified: new Date().toISOString().slice(0, 10) } as any
+          : item
+      );
+      saveMasterData('access_users_registry', updated);
+      return updated;
+    });
+
+    if (onUpdateUserProfile) {
+      onUpdateUserProfile({
+        id: usr.id,
+        name: usr.name,
+        email: usr.email,
+        roleTitle: usr.title,
+        fullLabel: `${usr.name} – ${roleName}`,
+        headerSubtitle: roleName,
+        department: 'Internal Audit',
+        canApproveHead: normR === 'Chief Audit Executive' || normR === 'System administrator',
+        canApproveIndependent: normR === 'Audit Division Head' || normR === 'Audit Supervisor' || normR === 'Independent Reviewer',
+        canApproveCAE: normR === 'Chief Audit Executive',
+        accountStatus: nextStatus === 'Active' ? 'Active' : 'Inactive',
+        employeeNumber: usr.employeeNumber,
+        isLocked: Boolean(usr.isLocked),
+        requiresPasswordChange: false,
+        mfaEnabled: Boolean(usr.mfaEnabled),
+        isPrivileged: Boolean(usr.isPrivileged),
+      });
+    }
+
+    await syncUserAuthAndWorkspace({
+      fullName: usr.name,
+      email: usr.email,
+      roleName,
+      scope: usr.scope,
+      employeeNumber: usr.employeeNumber,
+      isActive: nextStatus === 'Active',
+      isLocked: Boolean(usr.isLocked),
+    });
+
+    notifyAccess(
+      'success',
+      nextStatus === 'Active'
+        ? `Account "${usr.name}" reactivated for Google Sign-In.`
+        : `Account "${usr.name}" suspended and sign-in access revoked.`
+    );
+  };
+
+  const handleRemoveAccessUser = async (usr: any) => {
+    const mail = (usr.email || '').trim().toLowerCase();
+    if (mail === BOOTSTRAPPED_ADMIN_EMAIL) {
+      notifyAccess('error', 'The primary system administrator account cannot be removed.');
+      return;
+    }
+
+    setHasSavedRegistry(true);
+    setAccessUsers((prev) => {
+      const updated = prev.filter((item) => item.id !== usr.id);
+      saveMasterData('access_users_registry', updated);
+      return updated;
+    });
+
+    if (onDeleteUserProfile) {
+      onDeleteUserProfile(usr.id);
+    }
+
+    if (mail) {
+      await adminDeleteSystemUserByEmail(mail);
+      await syncWorkspaceMembershipForEmail(mail, false);
+    }
+
+    notifyAccess('success', `User "${usr.name}" removed from access control.`);
   };
 
 
@@ -4849,57 +5007,6 @@ export const MasterDataSetupAccessView: React.FC<{
         </div>
       </div>
 
-      {/* ── IA-8/IA-9: Login Simulation & Lockout Demo ──────────────────── */}
-      <div className="bg-white rounded-lg border border-slate-200/90 shadow-2xs p-5">
-        <div className="flex items-center gap-2 mb-3">
-          <h2 className="text-[16px] font-bold text-slate-900">Authentication controls demo</h2>
-          <span className="text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded-full">IA-7 · IA-8 · IA-9 · SM-4</span>
-        </div>
-        <p className="text-xs text-slate-500 mb-4">
-          Simulates login with account lockout after 3 failed attempts. Use <code className="bg-slate-100 px-1 rounded">CorrectPw!1</code> as the correct password. Demonstrates generic error messages (IA-7), lockout (IA-8), and single-session enforcement (SM-4).
-        </p>
-        <div className="flex flex-wrap gap-3 items-end">
-          <div>
-            <label className="block text-xs text-slate-600 mb-1">Username (email prefix)</label>
-            <input type="text" autoComplete="off" value={loginSimUser}
-              onChange={(e) => setLoginSimUser(e.target.value)}
-              placeholder="e.g. m.santos"
-              className="px-3 py-2 bg-white border border-slate-300 rounded-md text-xs text-slate-800 w-44" />
-          </div>
-          <div>
-            <label className="block text-xs text-slate-600 mb-1">Password</label>
-            <div className="relative">
-              <input type={showLoginSimPw ? 'text' : 'password'} autoComplete="new-password" value={loginSimPw}
-                onChange={(e) => setLoginSimPw(e.target.value)}
-                placeholder="Enter password"
-                className="px-3 py-2 bg-white border border-slate-300 rounded-md text-xs text-slate-800 w-44 pr-10" />
-              <button type="button" onClick={() => setShowLoginSimPw((p) => !p)}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer text-[11px]">
-                {showLoginSimPw ? '🙈' : '👁️'}
-              </button>
-            </div>
-          </div>
-          <button type="button" onClick={handleSimulateLogin}
-            className="px-4 py-2 bg-[#492785] hover:bg-[#3b1f6b] text-white text-xs font-semibold rounded-md cursor-pointer">
-            Simulate login
-          </button>
-          <button type="button" onClick={() => { setLoginSimUser(''); setLoginSimPw(''); setLoginSimError(''); setLoginSimSuccess(''); }}
-            className="px-3 py-2 bg-white border border-slate-300 text-xs text-slate-700 font-medium rounded-md cursor-pointer">
-            Clear
-          </button>
-        </div>
-        {loginSimError && (
-          <div className="mt-3 px-3.5 py-2.5 bg-red-50 border border-red-200 rounded-md text-xs text-red-800 font-medium">
-            🔒 {loginSimError}
-          </div>
-        )}
-        {loginSimSuccess && (
-          <div className="mt-3 px-3.5 py-2.5 bg-emerald-50 border border-emerald-200 rounded-md text-xs text-emerald-800 font-medium">
-            ✓ {loginSimSuccess}
-          </div>
-        )}
-      </div>
-
       {/* ── LAC-3: User accounts table with AL-4.x fields & UAM export ──── */}
       <div className="bg-white rounded-lg border border-slate-200/90 shadow-2xs p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -4909,7 +5016,7 @@ export const MasterDataSetupAccessView: React.FC<{
               <span className="text-[10px] font-bold bg-[#E4DDF8] text-[#492785] px-2 py-0.5 rounded-full">LAC-1 · LAC-3 · LAC-4 · AL-4</span>
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              Assign roles to users and choose each custom role’s access template. Includes all AL-4.x required audit log fields.
+              Assign roles to registered Google emails and choose each custom role’s access template. Unlisted Google accounts are blocked at sign-in.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2 shrink-0">
@@ -4940,7 +5047,7 @@ export const MasterDataSetupAccessView: React.FC<{
             <div className="flex items-center gap-2">
               <span className="font-bold">🔒 View-Only Mode (LAC-1 / LAC-3):</span>
               <span>
-                Signed in as <strong>{currentUser.name}</strong> ({currentUser.headerSubtitle}). User account creation, role editing, and password resets require <strong>System administrator</strong> authority.
+                Signed in as <strong>{currentUser.name}</strong> ({currentUser.headerSubtitle}). User account creation, role editing, and access updates require <strong>System administrator</strong> authority.
               </span>
             </div>
             <span className="px-2 py-0.5 rounded text-[10.5px] font-bold bg-amber-100 text-amber-800 border border-amber-300 uppercase">
@@ -4949,11 +5056,11 @@ export const MasterDataSetupAccessView: React.FC<{
           </div>
         )}
 
-        {/* Add user form */}
+        {/* Add user form (Google Sign-In Allowlist) */}
         {showAddUserForm && (
           <div className="mt-4 p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
             <div className="flex items-center justify-between">
-              <div className="text-xs font-bold text-slate-900">New user account — IA-1 / IA-2 / PM-3 / PM-4</div>
+              <div className="text-xs font-bold text-slate-900">New user account — Google Sign-In &amp; Role Assignment</div>
               <span className="text-[11px] text-slate-500">All fields with * are required</span>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -4965,7 +5072,7 @@ export const MasterDataSetupAccessView: React.FC<{
                   className="w-full px-3 py-2 bg-white border border-slate-300 rounded-md text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#492785]" />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">Email / UPN * <span className="text-slate-400 font-normal">(becomes username)</span></label>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Google Email *</label>
                 <input type="email" autoComplete="off" value={newUserEmail}
                   onChange={(e) => { setNewUserEmail(e.target.value); setNewUserNameError(''); setNewUserFormError(''); }}
                   placeholder="s.magsaysay@citysavings.com.ph"
@@ -4989,72 +5096,12 @@ export const MasterDataSetupAccessView: React.FC<{
                   ))}
                 </select>
               </div>
-              <div>
+              <div className="sm:col-span-2">
                 <label className="block text-xs font-medium text-slate-700 mb-1">Scope</label>
                 <input type="text" autoComplete="off" value={newUserScope}
                   onChange={(e) => { setNewUserScope(e.target.value); setNewUserFormError(''); }}
                   placeholder="Assigned engagements"
                   className="w-full px-3 py-2 bg-white border border-slate-300 rounded-md text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#492785]" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">
-                  Initial password <span className="text-slate-400 font-normal">(PM-4: leave blank for auto-generated)</span>
-                </label>
-                <div className="relative">
-                  <input type={showNewUserPassword ? 'text' : 'password'} autoComplete="new-password"
-                    value={newUserPassword}
-                    onChange={(e) => { setNewUserPassword(e.target.value); setNewUserFormError(''); }}
-                    placeholder="Auto-generated if empty"
-                    className={`w-full px-3 py-2 bg-white border rounded-md text-xs text-slate-800 pr-10 focus:outline-none focus:ring-1 focus:ring-[#492785] ${newUserFormError && newUserPassword ? 'border-red-400' : 'border-slate-300'}`} />
-                  <button type="button" onClick={() => setShowNewUserPassword((p) => !p)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer text-[11px]">
-                    {showNewUserPassword ? '🙈' : '👁️'}
-                  </button>
-                </div>
-                {!newUserPassword && (
-                  <p className="text-[10px] text-slate-500 mt-1">
-                    Tip: If left blank, a compliant 14-character temporary password will be auto-generated.
-                  </p>
-                )}
-                {newUserPassword && (() => {
-                  const isPriv = normalizeRole(newUserRole) === 'System administrator';
-                  const score = scorePasswordStrength(newUserPassword);
-                  const { valid } = validatePasswordStrength(newUserPassword, isPriv);
-                  const hasMinLen = newUserPassword.length >= (isPriv ? 12 : 8);
-                  const hasLetter = /[a-zA-Z]/.test(newUserPassword);
-                  const hasNumber = /[0-9]/.test(newUserPassword);
-                  const hasSpecial = /[^a-zA-Z0-9]/.test(newUserPassword);
-
-                  return (
-                    <div className="mt-1.5 space-y-1">
-                      <div className="flex gap-0.5">
-                        {[0,1,2,3,4].map((i) => (
-                          <div key={i} className={`h-1 flex-1 rounded-full ${i <= score ? PASSWORD_STRENGTH_COLORS[score] : 'bg-slate-200'}`} />
-                        ))}
-                      </div>
-                      <div className="flex items-center justify-between text-[11px] text-slate-500">
-                        <span>PM-13: Strength — <strong>{PASSWORD_STRENGTH_LABELS[score]}</strong></span>
-                        <span className={valid ? 'text-emerald-700 font-semibold' : 'text-amber-700 font-medium'}>
-                          {valid ? '✓ Policy met' : 'Policy requirement missing'}
-                        </span>
-                      </div>
-                      <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px] pt-0.5">
-                        <span className={hasMinLen ? 'text-emerald-700 font-medium' : 'text-slate-400'}>
-                          {hasMinLen ? '✓' : '•'} {isPriv ? '12+ chars' : '8+ chars'}
-                        </span>
-                        <span className={hasLetter ? 'text-emerald-700 font-medium' : 'text-slate-400'}>
-                          {hasLetter ? '✓' : '•'} Letters
-                        </span>
-                        <span className={hasNumber ? 'text-emerald-700 font-medium' : 'text-slate-400'}>
-                          {hasNumber ? '✓' : '•'} Numbers
-                        </span>
-                        <span className={hasSpecial ? 'text-emerald-700 font-medium' : 'text-red-600 font-bold'}>
-                          {hasSpecial ? '✓ Special symbol' : '✗ Symbol (!@#$%^&*)'}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })()}
               </div>
             </div>
 
@@ -5178,7 +5225,7 @@ export const MasterDataSetupAccessView: React.FC<{
                 <th className="py-2.5 px-3">EMAIL</th>
                 <th className="py-2.5 px-3">ROLES</th>
                 <th className="py-2.5 px-3">LAST LOGIN (AL-4.4)</th>
-                <th className="py-2.5 px-3">PW STATUS (PM-7/PM-9)</th>
+                <th className="py-2.5 px-3">AUTH METHOD</th>
                 <th className="py-2.5 px-3">STATUS (AL-4.7)</th>
                 <th className="py-2.5 pl-3 text-right">ACTIONS</th>
               </tr>
@@ -5189,14 +5236,12 @@ export const MasterDataSetupAccessView: React.FC<{
                 .map((usr, index) => {
                 const isLocked = (usr as any).isLocked || false;
                 const failedCount = (usr as any).failedLoginCount || 0;
-                const requiresPwChange = (usr as any).requiresPasswordChange || false;
                 const mfaOn = (usr as any).mfaEnabled || false;
                 const empNo = (usr as any).employeeNumber || '—';
                 const lastLogin = (usr as any).lastLoginDate;
                 const lastLoginDisplay = lastLogin && lastLogin !== '—'
                   ? new Date(lastLogin).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })
                   : '—';
-                const expiryState = getUserExpiryState(usr);
                 return (
                   <tr key={usr.id} className={`transition-colors ${isLocked ? 'bg-red-50/40' : 'hover:bg-slate-50/40'}`}>
                     <td className="py-3 pr-3 font-mono-tabular text-[11px] font-semibold text-slate-700 whitespace-nowrap">
@@ -5235,8 +5280,9 @@ export const MasterDataSetupAccessView: React.FC<{
                         })}
                         <select
                           value={roleDefinitions.some((role) => role.name === usr.roles[0]) ? usr.roles[0] : normalizeRole(usr.roles[0])}
+                          disabled={accessActive && !isSystemAdmin}
                           onChange={(e) => handleUpdateUserRole(usr.id, e.target.value)}
-                          className="text-[10px] bg-white border border-slate-300 rounded px-1.5 py-0.5 text-slate-700 hover:border-[#492785] cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#492785]"
+                          className="text-[10px] bg-white border border-slate-300 rounded px-1.5 py-0.5 text-slate-700 hover:border-[#492785] cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#492785] disabled:opacity-60 disabled:cursor-not-allowed"
                           title="Change assigned role">
                           {roleDefinitions.map(({ name }) => (
                             <option key={name} value={name}>{name}</option>
@@ -5247,29 +5293,9 @@ export const MasterDataSetupAccessView: React.FC<{
                     </td>
                     <td className="py-3 px-3 text-[11px] text-slate-600">{lastLoginDisplay}</td>
                     <td className="py-3 px-3">
-                      {requiresPwChange && (
-                        <span className="inline-block text-[10px] font-semibold bg-orange-100 text-orange-800 border border-orange-300 px-2 py-0.5 rounded-full">
-                          PM-3: First login — change required
-                        </span>
-                      )}
-                      {!requiresPwChange && expiryState === 'expired' && (
-                        <span className="inline-block text-[10px] font-semibold bg-red-100 text-red-800 border border-red-300 px-2 py-0.5 rounded-full">
-                          PM-9: Password expired
-                        </span>
-                      )}
-                      {!requiresPwChange && expiryState === 'warningSoon' && (
-                        <span className="inline-block text-[10px] font-semibold bg-yellow-100 text-yellow-800 border border-yellow-300 px-2 py-0.5 rounded-full">
-                          PM-8: Expires soon (&lt;15 days)
-                        </span>
-                      )}
-                      {!requiresPwChange && expiryState === 'ok' && (
-                        <span className="inline-block text-[10px] font-semibold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full">
-                          OK
-                        </span>
-                      )}
-                      {!requiresPwChange && expiryState === 'notSet' && (
-                        <span className="text-[10px] text-slate-400">—</span>
-                      )}
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700">
+                        Google Sign-In
+                      </span>
                     </td>
                     <td className="py-3 px-3">
                       {isLocked ? (
@@ -5294,7 +5320,7 @@ export const MasterDataSetupAccessView: React.FC<{
                     <td className="py-3 pl-3 text-right whitespace-nowrap">
                       <div className="inline-flex items-center gap-1 flex-wrap justify-end">
                         {isLocked && (
-                          <button type="button" onClick={() => handleAdminUnlock(usr.id, usr.name)}
+                          <button type="button" onClick={() => handleAdminUnlock(usr.id, usr.name, usr.email)}
                             className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white border border-emerald-700 rounded text-[10px] font-bold cursor-pointer">
                             Unlock (IA-9)
                           </button>
@@ -5305,53 +5331,19 @@ export const MasterDataSetupAccessView: React.FC<{
                           {accessActive && !isSystemAdmin ? 'View access' : 'Edit access'}
                         </button>
                         {canSimulateAccess && <button type="button"
-                          onClick={() => { const found = userProfiles.find((u: UserProfile) => u.name === usr.name); if (found) { onChangeUser(found); } else { const roleName = usr.roles[0]; const accessRole = normalizeRole(roleName); onChangeUser({ id: usr.id, name: usr.name, roleTitle: usr.roles.join(', '), fullLabel: `${usr.name} — ${usr.roles.join(', ')}`, headerSubtitle: roleName, department: usr.title, canApproveHead: accessRole === 'Chief Audit Executive' || accessRole === 'System administrator', canApproveIndependent: accessRole === 'Audit Division Head' || accessRole === 'Audit Supervisor' || accessRole === 'Independent Reviewer', canApproveCAE: accessRole === 'Chief Audit Executive' }); } }}
+                          onClick={() => { const found = userProfiles.find((u: UserProfile) => u.name === usr.name); if (found) { onChangeUser(found); } else { const roleName = usr.roles[0]; const accessRole = normalizeRole(roleName); onChangeUser({ id: usr.id, name: usr.name, email: usr.email, roleTitle: usr.roles.join(', '), fullLabel: `${usr.name} — ${usr.roles.join(', ')}`, headerSubtitle: roleName, department: usr.title, canApproveHead: accessRole === 'Chief Audit Executive' || accessRole === 'System administrator', canApproveIndependent: accessRole === 'Audit Division Head' || accessRole === 'Audit Supervisor' || accessRole === 'Independent Reviewer', canApproveCAE: accessRole === 'Chief Audit Executive' }); } }}
                           className="px-2 py-1 bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 rounded text-[10px] font-medium cursor-pointer">
                           Impersonate
                         </button>}
                         {(!accessActive || isSystemAdmin) && (
                           <>
                             <button type="button"
-                              onClick={() => handleGenerateTempPw(usr.id)}
-                              className="px-2 py-1 bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 rounded text-[10px] font-medium cursor-pointer">
-                              Reset PW
-                            </button>
-                            <button type="button"
-                              onClick={() => {
-                                setAccessUsers((prev) =>
-                                  prev.map((item) => {
-                                    if (item.id !== usr.id) return item;
-                                    const nextStatus = item.status === 'Active' ? 'Suspended' : 'Active';
-                                    const roleName = usr.roles[0];
-                                    const normR = normalizeRole(roleName);
-                                    if (onUpdateUserProfile) {
-                                      onUpdateUserProfile({
-                                        id: usr.id,
-                                        name: usr.name,
-                                        roleTitle: usr.title,
-                                        fullLabel: `${usr.name} – ${roleName}`,
-                                        headerSubtitle: roleName,
-                                        department: 'Internal Audit',
-                                        canApproveHead: normR === 'Chief Audit Executive' || normR === 'System administrator',
-                                        canApproveIndependent: normR === 'Audit Division Head' || normR === 'Audit Supervisor' || normR === 'Independent Reviewer',
-                                        canApproveCAE: normR === 'Chief Audit Executive',
-                                        accountStatus: nextStatus === 'Active' ? 'Active' : 'Inactive',
-                                      });
-                                    }
-                                    return { ...item, status: nextStatus } as any;
-                                  })
-                                );
-                              }}
+                              onClick={() => handleToggleSuspendUser(usr)}
                               className="px-2 py-1 bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 rounded text-[10px] font-medium cursor-pointer">
                               {usr.status === 'Active' ? 'Suspend' : 'Activate'}
                             </button>
                             <button type="button"
-                              onClick={() => {
-                                setAccessUsers((prev) => prev.filter((item) => item.id !== usr.id));
-                                if (onDeleteUserProfile) {
-                                  onDeleteUserProfile(usr.id);
-                                }
-                              }}
+                              onClick={() => handleRemoveAccessUser(usr)}
                               className="px-2 py-1 bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 rounded text-[10px] font-medium cursor-pointer">
                               Remove
                             </button>
@@ -5364,7 +5356,7 @@ export const MasterDataSetupAccessView: React.FC<{
               })}
               {accessUsers.filter(matchesAccessUserFilters).length === 0 && (
                 <tr>
-                  <td colSpan={7} className="py-8 text-center text-xs text-slate-500">
+                  <td colSpan={8} className="py-8 text-center text-xs text-slate-500">
                     No user accounts match the selected filters or search query.
                   </td>
                 </tr>
@@ -5546,30 +5538,6 @@ export const MasterDataSetupAccessView: React.FC<{
           </div>
         )}
 
-        {/* PM-10: Password reset token modal */}
-        {resetTargetId && (
-          <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
-            <div className="text-xs font-bold text-amber-900 mb-1">
-              PM-4/PM-10: Temporary password generated — single-use, expires in 15–30 min
-            </div>
-            <p className="text-xs text-amber-800 mb-2">
-              User will be required to change this password on first login (PM-3). Send via secure channel only — do not transmit in cleartext email.
-            </p>
-            <div className="flex items-center gap-2">
-              <code className={`px-3 py-1.5 bg-white border border-amber-300 rounded text-sm font-mono font-bold text-amber-900 tracking-widest ${showTempPw ? '' : 'blur-sm select-none'}`}>
-                {generatedTempPw}
-              </code>
-              <button type="button" onClick={() => setShowTempPw((p) => !p)}
-                className="text-xs text-amber-700 hover:underline cursor-pointer font-medium">
-                {showTempPw ? 'Hide' : 'Reveal'}
-              </button>
-              <button type="button" onClick={() => { setResetTargetId(null); setGeneratedTempPw(''); setShowTempPw(false); }}
-                className="ml-auto text-xs text-amber-700 hover:underline cursor-pointer font-medium">
-                Dismiss
-              </button>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* ── IA-11: Privileged Account Register ──────────────────────────── */}
@@ -5589,7 +5557,7 @@ export const MasterDataSetupAccessView: React.FC<{
                 <th className="py-2 px-4">EMPLOYEE NO.</th>
                 <th className="py-2 px-4">LAYER</th>
                 <th className="py-2 px-4">MFA</th>
-                <th className="py-2 px-4">PW MAX AGE</th>
+                <th className="py-2 px-4">AUTH PROVIDER</th>
                 <th className="py-2 pl-4">STATUS</th>
               </tr>
             </thead>
@@ -5610,9 +5578,7 @@ export const MasterDataSetupAccessView: React.FC<{
                         : <span className="text-[10px] font-bold text-red-700 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded-full">⚠ Not set</span>
                       }
                     </td>
-                    <td className="py-2.5 px-4 text-slate-600">
-                      {(u as any).mfaEnabled ? '365 days (PM-7 with MFA)' : '180 days (PM-7 no MFA)'}
-                    </td>
+                    <td className="py-2.5 px-4 text-slate-600">Google SSO (Allowlist)</td>
                     <td className="py-2.5 pl-4">
                       <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
                         u.status === 'Active' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'

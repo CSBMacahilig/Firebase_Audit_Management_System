@@ -123,12 +123,6 @@ export const BulkImportModal: React.FC<Props> = ({
     } catch (error) {
       setFileError(error instanceof Error ? error.message : 'Import did not complete.');
     } finally {
-      if (target === 'profiles') {
-        setRows((current) => current.map((row) => ({
-          ...row,
-          values: { ...row.values, initial_password: '' },
-        })));
-      }
       setIsImporting(false);
     }
   };
@@ -172,7 +166,7 @@ export const BulkImportModal: React.FC<Props> = ({
 
           {target === 'profiles' && (
             <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
-              Imports directory profiles. To also create a standard login, provide username, system_role=user, and a unique initial_password; the user must change it at first sign-in. Passwords are masked in the preview and are never logged. Admin accounts must be created separately.
+              Imports directory profiles. To also allow Google Sign-In, provide username and system_role=user alongside the user’s Google email. Admin accounts must be assigned separately in User accounts &amp; role assignments.
             </div>
           )}
 
@@ -220,10 +214,8 @@ export const BulkImportModal: React.FC<Props> = ({
                       <tr key={row.line} className="border-t border-slate-100 align-top">
                         <td className="px-3 py-2 font-mono text-slate-500">{row.line}</td>
                         {previewColumns.map((column) => (
-                          <td key={column} className="max-w-56 truncate px-3 py-2 text-slate-700" title={column === 'initial_password' && row.values[column] ? '••••••••' : row.values[column]}>
-                            {column === 'initial_password' && row.values[column]
-                              ? '••••••••'
-                              : row.values[column] || '—'}
+                          <td key={column} className="max-w-56 truncate px-3 py-2 text-slate-700" title={row.values[column]}>
+                            {row.values[column] || '—'}
                           </td>
                         ))}
                         <td className={`px-3 py-2 ${row.errors.length ? 'text-rose-700' : 'text-emerald-700'}`}>

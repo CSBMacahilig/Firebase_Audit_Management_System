@@ -9,6 +9,7 @@ import {
   adminToggleActive,
   adminUpdateUserRole,
 } from '../utils/authStore';
+import { syncWorkspaceMembershipForEmail } from '../utils/db';
 
 /**
  * AdminUserManagement
@@ -60,16 +61,19 @@ export const AdminUserManagement: React.FC<Props> = ({ session, onClose }) => {
       setAddError('Username, full name, and Google email are required.');
       return;
     }
+    const trimmedEmail = newEmail.trim().toLowerCase();
     setAddLoading(true);
     const result = await adminAddUser(session, {
       username: newUsername.trim(),
       fullName: newFullName.trim(),
-      email: newEmail.trim(),
+      email: trimmedEmail,
       role: newRole,
+      appRole: newRole === 'admin' ? 'System administrator' : 'Assisting Auditor',
     });
-    setAddLoading(false);
     if (result.success) {
-      notify('success', `User "${newEmail.trim()}" pre-authorized with role "${newRole}".`);
+      await syncWorkspaceMembershipForEmail(trimmedEmail, true);
+      setAddLoading(false);
+      notify('success', `User "${trimmedEmail}" pre-authorized with role "${newRole}".`);
       setNewUsername('');
       setNewFullName('');
       setNewEmail('');
@@ -77,14 +81,18 @@ export const AdminUserManagement: React.FC<Props> = ({ session, onClose }) => {
       setShowAddForm(false);
       refresh();
     } else {
+      setAddLoading(false);
       setAddError(result.error ?? 'Failed to add user.');
     }
   };
 
   // ── Unlock ───────────────────────────────────────────────────────────────
-  const handleUnlock = async (userId: string, name: string) => {
-    const result = await adminUnlockUser(session, userId);
+  const handleUnlock = async (userId: string, name: string, email?: string, isActive = true) => {
+    const result = await adminUnlockUser(session, userId, email);
     if (result.success) {
+      if (email && isActive) {
+        await syncWorkspaceMembershipForEmail(email, true);
+      }
       notify('success', `IA-9: Account "${name}" unlocked.`);
       refresh();
     } else {
@@ -93,9 +101,12 @@ export const AdminUserManagement: React.FC<Props> = ({ session, onClose }) => {
   };
 
   // ── Toggle active ────────────────────────────────────────────────────────
-  const handleToggleActive = async (userId: string, name: string, currentlyActive: boolean) => {
+  const handleToggleActive = async (userId: string, name: string, currentlyActive: boolean, email?: string, isLocked = false) => {
     const result = await adminToggleActive(session, userId);
     if (result.success) {
+      if (email) {
+        await syncWorkspaceMembershipForEmail(email, !currentlyActive && !isLocked);
+      }
       notify('success', `Account "${name}" ${currentlyActive ? 'deactivated' : 'reactivated'}.`);
       refresh();
     } else {
@@ -104,9 +115,12 @@ export const AdminUserManagement: React.FC<Props> = ({ session, onClose }) => {
   };
 
   // ── Role switch ──────────────────────────────────────────────────────────
-  const handleRoleChange = async (userId: string, name: string, nextRole: SystemRole) => {
+  const handleRoleChange = async (userId: string, name: string, nextRole: SystemRole, email?: string, shouldKeepWorkspace = true) => {
     const result = await adminUpdateUserRole(session, userId, nextRole);
     if (result.success) {
+      if (email && shouldKeepWorkspace) {
+        await syncWorkspaceMembershipForEmail(email, true);
+      }
       notify('success', `Role for "${name}" updated to "${nextRole}".`);
       refresh();
     } else {
@@ -344,7 +358,7 @@ export const AdminUserManagement: React.FC<Props> = ({ session, onClose }) => {
                             {u.isLocked && (
                               <button
                                 type="button"
-                                onClick={() => handleUnlock(u.id, u.fullName)}
+                                onClick={() => handleUnlock(u.id, u.fullName, u.email, u.isActive)}
                                 className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold rounded-md cursor-pointer"
                               >
                                 Unlock
@@ -354,14 +368,14 @@ export const AdminUserManagement: React.FC<Props> = ({ session, onClose }) => {
                               <>
                                 <button
                                   type="button"
-                                  onClick={() => handleRoleChange(u.id, u.fullName, u.role === 'admin' ? 'user' : 'admin')}
+                                  onClick={() => handleRoleChange(u.id, u.fullName, u.role === 'admin' ? 'user' : 'admin', u.email, u.isActive && !u.isLocked)}
                                   className="px-2.5 py-1 bg-white hover:bg-purple-50 text-[#492785] border border-purple-200 text-[10px] font-semibold rounded-md cursor-pointer"
                                 >
                                   {u.role === 'admin' ? 'Set User' : 'Set Admin'}
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => handleToggleActive(u.id, u.fullName, u.isActive)}
+                                  onClick={() => handleToggleActive(u.id, u.fullName, u.isActive, u.email, u.isLocked)}
                                   className="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 text-[10px] font-semibold rounded-md cursor-pointer"
                                 >
                                   {u.isActive ? 'Deactivate' : 'Activate'}
