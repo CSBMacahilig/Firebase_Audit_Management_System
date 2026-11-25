@@ -20,6 +20,45 @@ export interface SqlConnectStatus {
 let cachedStatus: { uid: string; status: SqlConnectStatus } | null = null;
 let inflightStatus: Promise<SqlConnectStatus> | null = null;
 
+function isJsonContentType(contentType: string | null): boolean {
+  return Boolean(
+    contentType &&
+      (contentType.includes('application/json') ||
+        /application\/[\w.+-]+\+json/i.test(contentType))
+  );
+}
+
+function unexpectedResponseError(label: string, res: Response): Error {
+  if (res.redirected) {
+    const redirectPath = new URL(res.url).pathname;
+    return new Error(
+      `${label} was redirected to ${redirectPath}. Reopen the app in its authenticated browser session and try again.`
+    );
+  }
+  return new Error(
+    `${label} returned a non-JSON response (${res.headers.get('content-type') ?? 'unknown content type'}). Check the hosted API routing and deployment.`
+  );
+}
+
+async function readApiError(res: Response, label: string): Promise<Error> {
+  if (isJsonContentType(res.headers.get('content-type'))) {
+    const errPayload = await res.json().catch(() => ({}));
+    if (typeof errPayload?.error === 'string') {
+      return new Error(errPayload.error);
+    }
+  } else {
+    return unexpectedResponseError(label, res);
+  }
+  return new Error(`${label} (${res.status}).`);
+}
+
+async function readApiJson<T>(res: Response, label: string): Promise<T> {
+  if (!isJsonContentType(res.headers.get('content-type'))) {
+    throw unexpectedResponseError(label, res);
+  }
+  return (await res.json()) as T;
+}
+
 async function getBearerHeaders(): Promise<Record<string, string> | null> {
   const user = auth.currentUser;
   if (!user) return null;
@@ -55,14 +94,12 @@ export async function getSqlConnectStatus(): Promise<SqlConnectStatus> {
       }
       const res = await fetch('/api/sql/status', { headers });
       if (!res.ok) {
-        const errPayload = await res.json().catch(() => ({}));
-        throw new Error(
-          typeof errPayload?.error === 'string'
-            ? errPayload.error
-            : `Firebase Data Connect status API error (${res.status}).`
-        );
+        throw await readApiError(res, 'Firebase Data Connect status API error');
       }
-      const payload: unknown = await res.json();
+      const payload: unknown = await readApiJson(
+        res,
+        'Firebase Data Connect status API'
+      );
       if (
         !payload ||
         typeof payload !== 'object' ||
@@ -101,14 +138,9 @@ async function requestSqlApi<T>(
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   if (!res.ok) {
-    const errPayload = await res.json().catch(() => ({}));
-    throw new Error(
-      typeof errPayload?.error === 'string'
-        ? errPayload.error
-        : `Firebase Data Connect API error (${res.status}).`
-    );
+    throw await readApiError(res, 'Firebase Data Connect API error');
   }
-  return (await res.json()) as T;
+  return readApiJson<T>(res, 'Firebase Data Connect API');
 }
 
 export async function mirrorSqlWrite(
