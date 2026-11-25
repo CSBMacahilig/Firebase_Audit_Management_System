@@ -22,7 +22,12 @@ import {
 } from 'firebase/firestore';
 import { auth, db, googleProvider } from '../firebase';
 import { handleFirestoreError, OperationType } from './firestoreError';
-import { clearSqlStatusCache, sqlMirrorHelpers } from './sqlApiClient';
+import {
+  clearSqlStatusCache,
+  fetchSqlSystemUsers,
+  getSqlConnectStatus,
+  sqlMirrorHelpers,
+} from './sqlApiClient';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -381,6 +386,14 @@ export async function resolveFirebaseUserSession(firebaseUser: FirebaseUser): Pr
     requiresPasswordChange: false,
   };
   saveSession(session);
+  void sqlMirrorHelpers
+    .upsertAppSession(uid, {
+      role: targetSystemRole,
+      appRole: resolvedAppRole,
+      issuedAt: session.issuedAt,
+      expiresAt: session.expiresAt,
+    })
+    .catch(() => {});
   return session;
 }
 
@@ -450,6 +463,36 @@ export async function changeOwnPassword(
 export async function loadUsers(): Promise<SystemUser[]> {
   const current = auth.currentUser;
   if (!current) return [];
+
+  const sqlStatus = await getSqlConnectStatus();
+  if (sqlStatus.configured && sqlStatus.mode === 'primary') {
+    try {
+      const sqlRows = await fetchSqlSystemUsers();
+      if (sqlRows.length > 0) {
+        return sqlRows.map((d) => ({
+          id: String(d.id ?? ''),
+          username: String(d.username ?? ''),
+          fullName: String(d.fullName ?? ''),
+          email: String(d.email ?? ''),
+          role: d.role === 'admin' ? 'admin' : 'user',
+          appRole: typeof d.appRole === 'string' ? d.appRole : undefined,
+          scope: typeof d.scope === 'string' ? d.scope : undefined,
+          employeeNumber: typeof d.employeeNumber === 'string' ? d.employeeNumber : undefined,
+          passwordHash: '',
+          isActive: d.isActive !== false,
+          isLocked: d.isLocked === true,
+          failedLoginCount: 0,
+          requiresPasswordChange: false,
+          createdAt: '',
+          lastLogin: typeof d.lastLogin === 'string' ? d.lastLogin : null,
+          modifiedAt: typeof d.modifiedAt === 'string' ? d.modifiedAt : '',
+          source: 'system_user',
+        }));
+      }
+    } catch {
+      // Fall back to Firestore if SQL list fails
+    }
+  }
 
   const results: SystemUser[] = [];
   const seenEmails = new Set<string>();

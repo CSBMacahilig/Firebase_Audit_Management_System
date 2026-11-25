@@ -8,6 +8,7 @@ import {
   requireSqlAdmin,
 } from './server/authMiddleware.ts';
 import {
+  deleteDataConnectAppSession,
   deleteSqlSystemUserByEmail,
   deleteSqlUniverseEntity,
   deleteSqlUserProfile,
@@ -18,9 +19,11 @@ import {
   hasSqlConfig,
   insertSqlActivityLog,
   insertSqlFile,
+  listSqlSystemUsers,
   saveSqlFrequencies,
   saveSqlMasterData,
   syncWorkspaceSnapshotToSql,
+  upsertDataConnectAppSession,
   upsertSqlEngagement,
   upsertSqlFinding,
   upsertSqlIssue,
@@ -29,7 +32,7 @@ import {
   upsertSqlUniverseEntity,
   upsertSqlUserProfile,
   upsertSqlWorkingNote,
-} from './server/sqlConnect.ts';
+} from './server/dataConnectDb.ts';
 
 const ADMIN_ONLY_MASTER_KEYS = new Set([
   'access_users_registry',
@@ -45,7 +48,7 @@ function handleApiError(res: Response, err: unknown, fallback = 'SQL Connect req
 function ensureConfiguredOr503(res: Response): boolean {
   if (!hasSqlConfig()) {
     res.status(503).json({
-      error: 'SQL Connect is not configured in server environment secrets.',
+      error: 'Firebase SQL Connect service account (FIREBASE_SERVICE_ACCOUNT_KEY) is not configured.',
     });
     return false;
   }
@@ -275,6 +278,58 @@ async function startServer() {
     }
   );
 
+  app.get(
+    '/api/sql/system-users',
+    requireFirebaseAuth,
+    requireSqlAdmin,
+    async (_req: AuthenticatedRequest, res) => {
+      if (!ensureConfiguredOr503(res)) return;
+      try {
+        const users = await listSqlSystemUsers();
+        res.json({ users });
+      } catch (err) {
+        handleApiError(res, err);
+      }
+    }
+  );
+
+  app.put(
+    '/api/sql/sessions/:id',
+    requireFirebaseAuth,
+    async (req: AuthenticatedRequest, res) => {
+      if (!ensureConfiguredOr503(res)) return;
+      try {
+        const b = (req.body ?? {}) as Record<string, unknown>;
+        await upsertDataConnectAppSession({
+          id: req.params.id,
+          userId: req.authUser?.uid,
+          email: req.authUser?.email,
+          role: typeof b.role === 'string' ? b.role : req.authUser?.isSqlAdmin ? 'admin' : 'user',
+          appRole: typeof b.appRole === 'string' ? b.appRole : req.authUser?.appRole,
+          issuedAt: typeof b.issuedAt === 'string' ? b.issuedAt : undefined,
+          expiresAt: typeof b.expiresAt === 'string' ? b.expiresAt : undefined,
+        });
+        res.json({ ok: true });
+      } catch (err) {
+        handleApiError(res, err);
+      }
+    }
+  );
+
+  app.delete(
+    '/api/sql/sessions/:id',
+    requireFirebaseAuth,
+    async (req: AuthenticatedRequest, res) => {
+      if (!ensureConfiguredOr503(res)) return;
+      try {
+        await deleteDataConnectAppSession(req.params.id);
+        res.json({ ok: true });
+      } catch (err) {
+        handleApiError(res, err);
+      }
+    }
+  );
+
   app.put(
     '/api/sql/system-users',
     requireFirebaseAuth,
@@ -379,16 +434,23 @@ async function startServer() {
     }
   );
 
+  let viteInitError: unknown = null;
   if (process.env.NODE_ENV !== 'production') {
-    const viteReadyPromise = import('vite').then(({ createServer: createViteServer }) =>
-      createViteServer({
-        server: {
-          middlewareMode: true,
-          hmr: process.env.DISABLE_HMR !== 'true',
-        },
-        appType: 'spa',
-      })
-    );
+    const viteReadyPromise = import('vite')
+      .then(({ createServer: createViteServer }) =>
+        createViteServer({
+          server: {
+            middlewareMode: true,
+            hmr: process.env.DISABLE_HMR !== 'true',
+          },
+          appType: 'spa',
+        })
+      )
+      .catch((err) => {
+        viteInitError = err;
+        console.error('[vite] Failed to start Vite dev middleware:', err);
+        return null;
+      });
     app.use((req, res, next) => {
       if (req.path.startsWith('/api/')) {
         next();
@@ -396,6 +458,10 @@ async function startServer() {
       }
       viteReadyPromise
         .then((vite) => {
+          if (!vite) {
+            next(viteInitError ?? new Error('Vite middleware unavailable'));
+            return;
+          }
           vite.middlewares(req, res, next);
         })
         .catch(next);
@@ -408,17 +474,40 @@ async function startServer() {
     });
   }
 
-  const port = Number(process.env.PORT) || 3000;
-  app.listen(port, '0.0.0.0', () => {
+  const resolvePort = (): number => {
+    const argv = process.argv.slice(2);
+    for (let i = 0; i < argv.length; i += 1) {
+      const arg = argv[i];
+      if (arg === '--port' && i + 1 < argv.length) {
+        const parsed = Number(argv[i + 1]);
+        if (Number.isInteger(parsed) && parsed > 0 && parsed < 65536) return parsed;
+      } else if (arg.startsWith('--port=')) {
+        const parsed = Number(arg.slice('--port='.length));
+        if (Number.isInteger(parsed) && parsed > 0 && parsed < 65536) return parsed;
+      }
+    }
+    const envPort = Number(process.env.PORT);
+    if (Number.isInteger(envPort) && envPort > 0 && envPort < 65536) return envPort;
+    return 3000;
+  };
+
+  const port = resolvePort();
+  const server = app.listen(port, '0.0.0.0', () => {
     const sqlCfg = getSqlPublicConfig();
     console.log(
       `Audit Management System server listening on port ${port} (${
         sqlCfg.configured
-          ? `SQL Connect active: engine=${sqlCfg.engine}, mode=${sqlCfg.mode}`
-          : 'SQL Connect awaiting server environment variables'
+          ? `Firebase SQL Connect active over HTTPS (csb-ams-2-service, asia-southeast1, mode=${sqlCfg.mode})`
+          : 'Firebase SQL Connect awaiting FIREBASE_SERVICE_ACCOUNT_KEY'
       })`
     );
   });
+  server.on('error', (err) => {
+    console.error(`[server] HTTP server failed on port ${port}:`, err);
+  });
 }
 
-void startServer();
+startServer().catch((err) => {
+  console.error('[server] Fatal startup error:', err);
+  process.exit(1);
+});

@@ -1,18 +1,8 @@
 import type { NextFunction, Request, Response } from 'express';
-import { getApp, getApps, initializeApp } from 'firebase-admin/app';
-import { getAuth } from 'firebase-admin/auth';
-import firebaseConfig from '../firebase-applet-config.json' with { type: 'json' };
-import { findSqlSystemUserByEmail, hasSqlConfig } from './sqlConnect.ts';
+import { getAdminAuth } from './firebaseAdmin.ts';
+import { findSqlSystemUserByEmail, hasSqlConfig } from './dataConnectDb.ts';
 
 export const BOOTSTRAPPED_ADMIN_EMAIL = 'christian.macahilig@citysavings.com.ph';
-
-const firebaseApp = getApps().length
-  ? getApp()
-  : initializeApp({
-      projectId: firebaseConfig.projectId,
-    });
-
-const adminAuth = getAuth(firebaseApp);
 
 export interface VerifiedAuthUser {
   uid: string;
@@ -44,7 +34,7 @@ export async function requireFirebaseAuth(
   }
 
   try {
-    const decoded = await adminAuth.verifyIdToken(token);
+    const decoded = await getAdminAuth().verifyIdToken(token);
     const email = typeof decoded.email === 'string' ? decoded.email.trim().toLowerCase() : '';
     if (!email || decoded.email_verified !== true) {
       res.status(403).json({ error: 'Forbidden: A verified Google email is required.' });
@@ -64,11 +54,6 @@ export async function requireFirebaseAuth(
         }
         isSqlAdmin = isBootstrappedAdmin || sqlUser.role === 'admin';
         if (sqlUser.appRole) appRole = sqlUser.appRole;
-      } else if (process.env.SQL_CONNECT_MODE === 'primary' && !isBootstrappedAdmin) {
-        res.status(403).json({
-          error: 'Forbidden: Account is not registered in User accounts & role assignments.',
-        });
-        return;
       }
     }
 

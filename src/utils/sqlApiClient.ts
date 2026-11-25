@@ -143,6 +143,14 @@ export async function syncSnapshotToSql(snapshot: {
   return requestSqlApi('/api/sql/sync-from-workspace', 'POST', snapshot);
 }
 
+export async function fetchSqlSystemUsers(): Promise<Array<Record<string, unknown>>> {
+  const res = await requestSqlApi<{ users: Array<Record<string, unknown>> }>(
+    '/api/sql/system-users',
+    'GET'
+  );
+  return Array.isArray(res.users) ? res.users : [];
+}
+
 export const sqlMirrorHelpers = {
   upsertEngagement: (eng: AuditEngagement) =>
     mirrorSqlWrite(`/api/sql/engagements/${encodeURIComponent(eng.id)}`, 'PUT', eng),
@@ -194,4 +202,8 @@ export const sqlMirrorHelpers = {
     mirrorSqlWrite('/api/sql/system-users', 'PUT', user),
   deleteSystemUser: (email: string) =>
     mirrorSqlWrite('/api/sql/system-users', 'DELETE', { email }),
+  upsertAppSession: (id: string, session: Record<string, unknown>) =>
+    mirrorSqlWrite(`/api/sql/sessions/${encodeURIComponent(id)}`, 'PUT', session),
+  deleteAppSession: (id: string) =>
+    mirrorSqlWrite(`/api/sql/sessions/${encodeURIComponent(id)}`, 'DELETE'),
 };
