@@ -10,9 +10,12 @@ export const DATA_CONNECT_CONFIG = {
 } as const;
 
 let cachedApp: App | null = null;
+let cachedAuthApp: App | null = null;
 let cachedDataConnect: DataConnect | null = null;
+let cachedServiceAccount: ParsedServiceAccount | null = null;
 let serviceAccountActive = false;
 const ADMIN_APP_NAME = 'audit-management-server';
+const ADMIN_AUTH_APP_NAME = 'audit-management-auth';
 
 export function hasServiceAccountKey(): boolean {
   return Boolean((process.env.FIREBASE_SERVICE_ACCOUNT_KEY ?? '').trim());
@@ -182,8 +185,8 @@ function tryParseServiceAccountJson(raw: string): ParsedServiceAccount | null {
   return null;
 }
 
-export function getFirebaseAdminApp(): App {
-  if (cachedApp) return cachedApp;
+function getServiceAccount(): ParsedServiceAccount {
+  if (cachedServiceAccount) return cachedServiceAccount;
   const rawKey = (process.env.FIREBASE_SERVICE_ACCOUNT_KEY ?? '').trim();
   if (!rawKey) {
     throw new Error('FIREBASE_SERVICE_ACCOUNT_KEY is required for Firebase Data Connect.');
@@ -193,21 +196,40 @@ export function getFirebaseAdminApp(): App {
   if (!parsed) {
     throw new Error('FIREBASE_SERVICE_ACCOUNT_KEY must contain valid service-account JSON.');
   }
+  cachedServiceAccount = parsed;
+  serviceAccountActive = true;
+  return parsed;
+}
+
+export function getFirebaseAdminApp(): App {
+  if (cachedApp) return cachedApp;
+  const serviceAccount = getServiceAccount();
 
   cachedApp = getApps().find((app) => app.name === ADMIN_APP_NAME) ??
     initializeApp(
       {
-        credential: cert(parsed),
-        projectId: parsed.project_id || firebaseConfig.projectId,
+        credential: cert(serviceAccount),
+        projectId: serviceAccount.project_id || firebaseConfig.projectId,
       },
       ADMIN_APP_NAME
     );
-  serviceAccountActive = true;
   return cachedApp;
 }
 
 export function getAdminAuth() {
-  return getAuth(getFirebaseAdminApp());
+  if (!cachedAuthApp) {
+    const serviceAccount = getServiceAccount();
+    // ID tokens are issued for the client Firebase project, not the Data Connect project.
+    cachedAuthApp = getApps().find((app) => app.name === ADMIN_AUTH_APP_NAME) ??
+      initializeApp(
+        {
+          credential: cert(serviceAccount),
+          projectId: firebaseConfig.projectId,
+        },
+        ADMIN_AUTH_APP_NAME
+      );
+  }
+  return getAuth(cachedAuthApp);
 }
 
 export function getAdminDataConnect(): DataConnect {

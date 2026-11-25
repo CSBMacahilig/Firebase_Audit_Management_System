@@ -33,8 +33,25 @@ export async function requireFirebaseAuth(
     return;
   }
 
+  let adminAuth: ReturnType<typeof getAdminAuth>;
   try {
-    const decoded = await getAdminAuth().verifyIdToken(token);
+    adminAuth = getAdminAuth();
+  } catch {
+    res.status(503).json({
+      error: 'Firebase Admin credentials are missing or invalid. Configure FIREBASE_SERVICE_ACCOUNT_KEY.',
+    });
+    return;
+  }
+
+  let decoded: Awaited<ReturnType<ReturnType<typeof getAdminAuth>['verifyIdToken']>>;
+  try {
+    decoded = await adminAuth.verifyIdToken(token);
+  } catch {
+    res.status(401).json({ error: 'Unauthorized: Invalid or expired session token.' });
+    return;
+  }
+
+  try {
     const email = typeof decoded.email === 'string' ? decoded.email.trim().toLowerCase() : '';
     if (!email || decoded.email_verified !== true) {
       res.status(403).json({ error: 'Forbidden: A verified Google email is required.' });
@@ -65,8 +82,8 @@ export async function requireFirebaseAuth(
       appRole,
     };
     next();
-  } catch {
-    res.status(401).json({ error: 'Unauthorized: Invalid or expired session token.' });
+  } catch (error) {
+    next(error);
   }
 }
 

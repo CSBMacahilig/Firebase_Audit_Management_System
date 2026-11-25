@@ -55,7 +55,12 @@ export async function getSqlConnectStatus(): Promise<SqlConnectStatus> {
       }
       const res = await fetch('/api/sql/status', { headers });
       if (!res.ok) {
-        throw new Error(`Firebase Data Connect status API error (${res.status}).`);
+        const errPayload = await res.json().catch(() => ({}));
+        throw new Error(
+          typeof errPayload?.error === 'string'
+            ? errPayload.error
+            : `Firebase Data Connect status API error (${res.status}).`
+        );
       }
       const payload: unknown = await res.json();
       if (
