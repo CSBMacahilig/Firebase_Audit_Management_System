@@ -1,0 +1,315 @@
+query ListUserProfiles @auth(level: USER) {
+  userProfiles {
+    id
+    name
+    roleTitle
+    fullLabel
+    headerSubtitle
+    department
+    canApproveHead
+    canApproveIndependent
+    canApproveCae
+    employeeNumber
+    lastLoginDate
+    accountModifiedAt
+    accountStatus
+    failedLoginCount
+    isLocked
+    requiresPasswordChange
+    passwordLastChanged
+    passwordHistory
+    mfaEnabled
+    isPrivileged
+    createdAt
+    updatedAt
+    addedBy
+    modifiedBy
+    modifiedAt
+  }
+}
+
+query ListSystemUsers @auth(level: USER) {
+  systemUsers {
+    id
+    username
+    fullName
+    email
+    role
+    passwordHash
+    isActive
+    isLocked
+    failedLoginCount
+    requiresPasswordChange
+    createdAt
+    lastLogin
+    modifiedAt
+    addedBy
+    modifiedBy
+  }
+}
+
+query ListEngagements @auth(level: USER) {
+  engagements {
+    id
+    ref
+    year
+    title
+    category
+    department
+    entityName
+    likelihood
+    impact
+    riskScore
+    riskLevel
+    lead
+    headReviewer
+    independentReviewer
+    startDate
+    endDate
+    durationDays
+    budgetedHours
+    status
+    readyRatio
+    lifecycleStage
+    fieldworkPct
+    fieldworkDayCurrent
+    fieldworkDayTotal
+    reportStatus
+    reportRef
+    executiveSummary
+    createdAt
+    updatedAt
+    reportRating
+    addedBy
+    modifiedBy
+    modifiedAt
+    auditDivisionId
+    objectives
+    scope
+    criteria
+    addresseeName
+    addresseeTitle
+    copyFurnished
+  }
+}
+
+query ListWorkingNotes @auth(level: USER) {
+  workingNotes {
+    id
+    engagementId
+    ref
+    title
+    controlArea
+    author
+    status
+    hasException
+    updatedAt
+    testingProcedure
+    conclusion
+    reviewerComments
+    createdAt
+    addedBy
+    modifiedBy
+    modifiedAt
+    observations
+  }
+}
+
+query ListFindings @auth(level: USER) {
+  findings {
+    id
+    engagementId
+    ref
+    title
+    severity
+    condition
+    criteria
+    cause
+    effect
+    recommendation
+    owner
+    targetDate
+    status
+    linkedNoteRef
+    createdAt
+    addedBy
+    modifiedBy
+    modifiedAt
+    category
+  }
+}
+
+query ListTimelineActivities @auth(level: USER) {
+  timelineActivities {
+    id
+    engagementId
+    name
+    roleResponsible
+    dueDate
+    completedDate
+    status
+    stageId
+    createdAt
+    addedBy
+    modifiedBy
+    modifiedAt
+  }
+}
+
+query ListEngagementFiles @auth(level: USER) {
+  engagementFiles {
+    id
+    engagementId
+    name
+    folder
+    size
+    uploadedBy
+    uploadedAt
+    createdAt
+    addedBy
+    modifiedBy
+    modifiedAt
+  }
+}
+
+query ListActivityLogs @auth(level: USER) {
+  activityLogs {
+    id
+    engagementId
+    timestamp
+    actor
+    action
+    detail
+    createdAt
+    addedBy
+    modifiedBy
+    modifiedAt
+  }
+}
+
+query ListIssueRegister @auth(level: USER) {
+  issueRegisters {
+    id
+    ref
+    title
+    auditRef
+    auditTitle
+    severity
+    owner
+    ownerUnit
+    originalDue
+    currentDue
+    extensionCount
+    daysStatus
+    isOverdue
+    isDueSoon
+    status
+    actionPlanSummary
+    evidenceNote
+    createdAt
+    updatedAt
+    addedBy
+    modifiedBy
+    modifiedAt
+    extensionReason
+  }
+}
+
+query ListUniverseEntities @auth(level: USER) {
+  universeEntities {
+    id
+    code
+    name
+    division
+    category
+    likelihood
+    impact
+    riskScore
+    riskLevel
+    lastAudited
+    nextDue
+    cycleMonths
+    defaultLead
+    createdAt
+    updatedAt
+    addedBy
+    modifiedBy
+    modifiedAt
+    auditDivisionId
+    riskNotes
+  }
+}
+
+query ListSizingConfigs @auth(level: USER) {
+  sizingConfigs {
+    id
+    sizeName
+    code
+    workingDays
+    calendarSpan
+    auditors
+    hoursPerDay
+    budgetedHours
+    typicalUse
+    createdAt
+    updatedAt
+    addedBy
+    modifiedBy
+    modifiedAt
+  }
+}
+
+query ListAuditFrequencies @auth(level: USER) {
+  auditFrequencies {
+    id
+    high
+    medium
+    low
+    updatedAt
+    addedBy
+    modifiedBy
+    modifiedAt
+  }
+}
+
+query ListMasterData @auth(level: USER) {
+  masterDatas {
+    id
+    data
+    createdAt
+    updatedAt
+    addedBy
+    modifiedBy
+    modifiedAt
+  }
+}
+
+query ListAuditDivisionRiskScales @auth(level: USER) {
+  auditDivisionRiskScales {
+    id
+    name
+    highMinScore
+    mediumMinScore
+    highCycleMonths
+    mediumCycleMonths
+    lowCycleMonths
+    highFieldworkWeeks
+    mediumFieldworkWeeks
+    lowFieldworkWeeks
+    addedBy
+    modifiedBy
+    modifiedAt
+    createdAt
+    updatedAt
+  }
+}
+
+query ListAppSessions @auth(level: USER) {
+  appSessions {
+    tokenHash
+    userId
+    expiresAt
+    revokedAt
+    createdAt
+  }
+}

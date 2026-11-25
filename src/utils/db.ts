@@ -67,7 +67,6 @@ import {
   fetchSqlWorkspace,
   getSqlConnectStatus,
   sqlMirrorHelpers,
-  syncSnapshotToSql,
 } from './sqlApiClient';
 
 export interface AuditFrequencies {
@@ -1451,14 +1450,8 @@ export async function fetchMasterData<T>(key: string, fallback: T): Promise<T> {
 
   if (auth.currentUser && (!ADMIN_ONLY_MASTER_KEYS.has(safeKey) || isAdmin)) {
     if (await isSqlPrimaryMode()) {
-      try {
-        const sqlVal = await fetchSqlMasterData<T>(safeKey);
-        if (sqlVal !== null && sqlVal !== undefined) {
-          return sqlVal;
-        }
-      } catch {
-        // Fallback to local/Firestore cache
-      }
+      const sqlVal = await fetchSqlMasterData<T>(safeKey);
+      return sqlVal === null || sqlVal === undefined ? fallback : sqlVal;
     }
     try {
       const snap = await getDoc(doc(db, 'master_data', safeKey));
@@ -1777,6 +1770,7 @@ export async function syncAllActiveWorkspaceMembers(activeEmails: string[]): Pro
 export async function ensureWorkspaceMembershipSynced(): Promise<void> {
   const { isAdmin, isBootstrapped } = getAuthAccessContext();
   if (!auth.currentUser || !isAdmin) return;
+  if (await isSqlPrimaryMode()) return;
 
   const actor = getCurrentAccountEmail();
   const sysSeedRef = doc(db, 'master_data', 'system_users_seeded');
@@ -1850,141 +1844,6 @@ export async function ensureWorkspaceMembershipSynced(): Promise<void> {
     const activeEmails = await fetchActiveMemberEmails();
     await syncAllActiveWorkspaceMembers(activeEmails);
 
-    const sqlStatus = await getSqlConnectStatus();
-    if (sqlStatus.configured) {
-      const sqlSyncRef = doc(db, 'master_data', 'sql_connect_initial_synced');
-      const sqlSyncSnap = await getDoc(sqlSyncRef);
-      if (!sqlSyncSnap.exists()) {
-        let shouldBackfill = sqlStatus.mode === 'sync';
-        if (!shouldBackfill && sqlStatus.mode === 'primary') {
-          const existingSql = await fetchSqlWorkspace().catch(() => null);
-          if (
-            existingSql &&
-            existingSql.engagements.length === 0 &&
-            existingSql.universe.length === 0
-          ) {
-            shouldBackfill = true;
-          }
-        }
-        if (shouldBackfill) {
-          const masterKeys = [
-            'sizing_configs',
-            'audit_division_risk_scales',
-            'app_roles',
-            'role_permissions_matrix',
-            'access_users_registry',
-            'auditors',
-            'auditee_directory',
-            'entity_types',
-            'audit_categories',
-            'setup_checklist',
-            'departments',
-            'audit_types',
-            'finding_categories',
-            'finding_severities',
-            'report_ratings',
-            'signatories',
-            'audit_statuses',
-          ];
-          const [engSnap, issueSnap, uniSnap, profSnap, freqSnap, usersList, masterEntries] =
-            await Promise.all([
-              getDocs(buildCollectionQuery('engagements')),
-              getDocs(buildCollectionQuery('issues_register')),
-              getDocs(buildCollectionQuery('universe_entities')),
-              getDocs(buildCollectionQuery('user_profiles')),
-              getDoc(doc(db, 'audit_frequencies', 'global')),
-              loadUsers(),
-              Promise.all(
-                masterKeys.map(async (k) => {
-                  const snap = await getDoc(doc(db, 'master_data', k)).catch(() => null);
-                  if (!snap || !snap.exists()) return null;
-                  const raw = snap.data()?.data;
-                  const val =
-                    raw && typeof raw === 'object' && 'value' in raw
-                      ? (raw as { value: unknown }).value
-                      : raw;
-                  return [k, val] as const;
-                })
-              ),
-            ]);
-
-          const engagements = await Promise.all(
-            engSnap.docs.map(async (d) => {
-              const eid = d.id;
-              const [wnSnap, fndSnap, taSnap, fileSnap, logSnap] = await Promise.all([
-                getDocs(buildSubcollectionQuery(eid, 'working_notes')),
-                getDocs(buildSubcollectionQuery(eid, 'findings')),
-                getDocs(buildSubcollectionQuery(eid, 'timeline_activities')),
-                getDocs(buildSubcollectionQuery(eid, 'files')),
-                getDocs(buildSubcollectionQuery(eid, 'activity_log')),
-              ]);
-              return docToEngagement(eid, d.data(), {
-                workingNotes: wnSnap.docs.map((sd) => docToWorkingNote(sd.id, sd.data())),
-                findings: fndSnap.docs.map((sd) => docToFinding(sd.id, sd.data())),
-                timelineActivities: taSnap.docs.map((sd) => docToTimeline(sd.id, sd.data())),
-                files: fileSnap.docs.map((sd) => docToFile(sd.id, sd.data())),
-                activityLog: logSnap.docs.map((sd) => docToActivityLog(sd.id, sd.data())),
-              });
-            })
-          );
-          const issues = issueSnap.docs.map((d) => docToIssue(d.id, d.data()));
-          const universe = uniSnap.docs.map((d, idx) => docToUniverse(d.id, d.data(), idx));
-          const userProfiles = await Promise.all(
-            profSnap.docs.map(async (pDoc) => {
-              const privSnap = await getDoc(doc(db, 'user_profiles', pDoc.id, 'private', 'contact')).catch(
-                () => null
-              );
-              const email = privSnap?.exists() ? String(privSnap.data().email ?? '') : undefined;
-              return docToUserProfile(pDoc.id, pDoc.data(), email);
-            })
-          );
-          const frequencies: AuditFrequencies = freqSnap.exists()
-            ? {
-                high: Number(freqSnap.data().high ?? 12),
-                medium: Number(freqSnap.data().medium ?? 36),
-                low: Number(freqSnap.data().low ?? 48),
-              }
-            : { high: 12, medium: 36, low: 48 };
-
-          const masterData: Record<string, unknown> = {};
-          for (const entry of masterEntries) {
-            if (entry) {
-              masterData[entry[0]] = entry[1];
-            }
-          }
-          await syncSnapshotToSql({
-            engagements,
-            issues,
-            universe,
-            userProfiles,
-            systemUsers: usersList
-              .filter((u) => Boolean(u.email))
-              .map((u) => ({
-                id: u.id,
-                username: u.username,
-                fullName: u.fullName,
-                email: u.email,
-                role: u.role,
-                appRole: u.appRole,
-                scope: u.scope,
-                employeeNumber: u.employeeNumber,
-                isActive: u.isActive,
-                isLocked: u.isLocked,
-              })),
-            frequencies,
-            masterData,
-          });
-          invalidateSqlWorkspaceCache();
-          await setDoc(sqlSyncRef, {
-            id: 'sql_connect_initial_synced',
-            data: { value: true },
-            addedBy: clampStr(actor, 160),
-            modifiedBy: clampStr(actor, 160),
-            updatedAt: serverTimestamp(),
-          });
-        }
-      }
-    }
   } catch (err) {
     console.warn('Workspace membership sync warning:', err);
   }

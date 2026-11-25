@@ -13,13 +13,12 @@ import type {
 
 export interface SqlConnectStatus {
   configured: boolean;
-  engine: 'postgres' | 'mssql' | 'mysql' | 'http' | null;
+  engine: 'https' | null;
   mode: 'sync' | 'primary';
 }
 
-let cachedStatus: { uid: string; status: SqlConnectStatus; checkedAt: number } | null = null;
+let cachedStatus: { uid: string; status: SqlConnectStatus } | null = null;
 let inflightStatus: Promise<SqlConnectStatus> | null = null;
-const UNCONFIGURED_RETRY_MS = 5000;
 
 async function getBearerHeaders(): Promise<Record<string, string> | null> {
   const user = auth.currentUser;
@@ -39,13 +38,9 @@ export function clearSqlStatusCache(): void {
 export async function getSqlConnectStatus(): Promise<SqlConnectStatus> {
   const uid = auth.currentUser?.uid;
   if (!uid) {
-    return { configured: false, engine: null, mode: 'sync' };
+    throw new Error('Authentication required for Firebase Data Connect.');
   }
-  if (
-    cachedStatus &&
-    cachedStatus.uid === uid &&
-    (cachedStatus.status.configured || Date.now() - cachedStatus.checkedAt < UNCONFIGURED_RETRY_MS)
-  ) {
+  if (cachedStatus && cachedStatus.uid === uid) {
     return cachedStatus.status;
   }
   if (inflightStatus) {
@@ -55,14 +50,29 @@ export async function getSqlConnectStatus(): Promise<SqlConnectStatus> {
   inflightStatus = (async () => {
     try {
       const headers = await getBearerHeaders();
-      if (!headers) return { configured: false, engine: null, mode: 'sync' as const };
+      if (!headers) {
+        throw new Error('Authentication required for Firebase Data Connect.');
+      }
       const res = await fetch('/api/sql/status', { headers });
-      if (!res.ok) return { configured: false, engine: null, mode: 'sync' as const };
-      const status = (await res.json()) as SqlConnectStatus;
-      cachedStatus = { uid, status, checkedAt: Date.now() };
+      if (!res.ok) {
+        throw new Error(`Firebase Data Connect status API error (${res.status}).`);
+      }
+      const payload: unknown = await res.json();
+      if (
+        !payload ||
+        typeof payload !== 'object' ||
+        !('configured' in payload) ||
+        !('engine' in payload) ||
+        !('mode' in payload) ||
+        payload.configured !== true ||
+        payload.engine !== 'https' ||
+        payload.mode !== 'primary'
+      ) {
+        throw new Error('Firebase Data Connect is not configured as the primary data store.');
+      }
+      const status = payload as SqlConnectStatus;
+      cachedStatus = { uid, status };
       return status;
-    } catch {
-      return { configured: false, engine: null, mode: 'sync' as const };
     } finally {
       inflightStatus = null;
     }
@@ -78,7 +88,7 @@ async function requestSqlApi<T>(
 ): Promise<T> {
   const headers = await getBearerHeaders();
   if (!headers) {
-    throw new Error('Authentication required for SQL Connect.');
+    throw new Error('Authentication required for Firebase Data Connect.');
   }
   const res = await fetch(path, {
     method,
@@ -90,7 +100,7 @@ async function requestSqlApi<T>(
     throw new Error(
       typeof errPayload?.error === 'string'
         ? errPayload.error
-        : `SQL Connect API error (${res.status}).`
+        : `Firebase Data Connect API error (${res.status}).`
     );
   }
   return (await res.json()) as T;
@@ -102,15 +112,10 @@ export async function mirrorSqlWrite(
   body?: unknown
 ): Promise<void> {
   const status = await getSqlConnectStatus();
-  if (!status.configured) return;
-  try {
-    await requestSqlApi(path, method, body);
-  } catch (err) {
-    if (status.mode === 'primary') {
-      throw err;
-    }
-    console.warn('SQL Connect background sync warning:', err);
+  if (!status.configured) {
+    throw new Error('Firebase Data Connect service account is not configured.');
   }
+  await requestSqlApi(path, method, body);
 }
 
 export async function fetchSqlWorkspace(): Promise<{

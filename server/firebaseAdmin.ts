@@ -1,4 +1,4 @@
-import { cert, getApp, getApps, initializeApp, type App, type ServiceAccount } from 'firebase-admin/app';
+import { cert, getApps, initializeApp, type App, type ServiceAccount } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getDataConnect, type DataConnect } from 'firebase-admin/data-connect';
 import firebaseConfig from '../firebase-applet-config.json' with { type: 'json' };
@@ -12,6 +12,7 @@ export const DATA_CONNECT_CONFIG = {
 let cachedApp: App | null = null;
 let cachedDataConnect: DataConnect | null = null;
 let serviceAccountActive = false;
+const ADMIN_APP_NAME = 'audit-management-server';
 
 export function hasServiceAccountKey(): boolean {
   return Boolean((process.env.FIREBASE_SERVICE_ACCOUNT_KEY ?? '').trim());
@@ -183,46 +184,25 @@ function tryParseServiceAccountJson(raw: string): ParsedServiceAccount | null {
 
 export function getFirebaseAdminApp(): App {
   if (cachedApp) return cachedApp;
-  if (getApps().length > 0) {
-    cachedApp = getApp();
-    return cachedApp;
+  const rawKey = (process.env.FIREBASE_SERVICE_ACCOUNT_KEY ?? '').trim();
+  if (!rawKey) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT_KEY is required for Firebase Data Connect.');
   }
 
-  const rawKey = (process.env.FIREBASE_SERVICE_ACCOUNT_KEY ?? '').trim();
-  if (rawKey) {
-    let parsed: ParsedServiceAccount | null = null;
-    try {
-      parsed = tryParseServiceAccountJson(rawKey);
-      if (!parsed) {
-        const diag = `len=${rawKey.length}, hasBraces=${rawKey.includes('{') && rawKey.includes('}')}, hasType=${rawKey.includes('service_account')}, hasPrivateKey=${rawKey.includes('private_key')}, hasClientEmail=${rawKey.includes('client_email')}`;
-        throw new Error(`Invalid service account JSON structure (${diag})`);
-      }
-      cachedApp = initializeApp({
+  const parsed = tryParseServiceAccountJson(rawKey);
+  if (!parsed) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT_KEY must contain valid service-account JSON.');
+  }
+
+  cachedApp = getApps().find((app) => app.name === ADMIN_APP_NAME) ??
+    initializeApp(
+      {
         credential: cert(parsed),
         projectId: parsed.project_id || firebaseConfig.projectId,
-      });
-      serviceAccountActive = true;
-      return cachedApp;
-    } catch (err) {
-      serviceAccountActive = false;
-      const safeMsg =
-        err instanceof Error &&
-        (err.message.startsWith('Invalid service account JSON structure') ||
-          err.message.startsWith('Service account') ||
-          err.message.startsWith('Failed to parse private key'))
-          ? err.message
-          : err instanceof Error
-            ? err.name
-            : 'Error';
-      console.error(
-        `[firebaseAdmin] Could not initialize with FIREBASE_SERVICE_ACCOUNT_KEY; falling back to projectId-only mode (${safeMsg})`
-      );
-    }
-  }
-
-  cachedApp = initializeApp({
-    projectId: firebaseConfig.projectId,
-  });
+      },
+      ADMIN_APP_NAME
+    );
+  serviceAccountActive = true;
   return cachedApp;
 }
 

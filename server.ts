@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'node:path';
 import type { Response } from 'express';
 import type { AuthenticatedRequest } from './server/authMiddleware.ts';
+import { DATA_CONNECT_CONFIG } from './server/firebaseAdmin.ts';
 import {
   requireFirebaseAuth,
   requireSqlAdmin,
@@ -40,7 +41,7 @@ const ADMIN_ONLY_MASTER_KEYS = new Set([
   'auditee_directory',
 ]);
 
-function handleApiError(res: Response, err: unknown, fallback = 'SQL Connect request failed.'): void {
+function handleApiError(res: Response, err: unknown, fallback = 'Firebase Data Connect request failed.'): void {
   const msg = err instanceof Error ? err.message : fallback;
   res.status(500).json({ error: msg || fallback });
 }
@@ -48,7 +49,7 @@ function handleApiError(res: Response, err: unknown, fallback = 'SQL Connect req
 function ensureConfiguredOr503(res: Response): boolean {
   if (!hasSqlConfig()) {
     res.status(503).json({
-      error: 'Firebase SQL Connect service account (FIREBASE_SERVICE_ACCOUNT_KEY) is not configured.',
+      error: 'Firebase Data Connect service account (FIREBASE_SERVICE_ACCOUNT_KEY) is not configured.',
     });
     return false;
   }
@@ -77,7 +78,7 @@ async function startServer() {
         await ensureSqlSchema(true);
         res.json({ ok: true });
       } catch (err) {
-        handleApiError(res, err, 'Failed to initialize SQL schema.');
+        handleApiError(res, err, 'Failed to verify the Firebase Data Connect schema.');
       }
     }
   );
@@ -91,7 +92,7 @@ async function startServer() {
       const snapshot = await fetchSqlWorkspaceSnapshot(includeAdminEmails);
       res.json(snapshot);
     } catch (err) {
-      handleApiError(res, err, 'Failed to load workspace from SQL Connect.');
+      handleApiError(res, err, 'Failed to load workspace from Firebase Data Connect.');
     }
   });
 
@@ -107,7 +108,7 @@ async function startServer() {
         const result = await syncWorkspaceSnapshotToSql(body, actor);
         res.json(result);
       } catch (err) {
-        handleApiError(res, err, 'Failed to synchronize workspace to SQL Connect.');
+        handleApiError(res, err, 'Failed to synchronize workspace to Firebase Data Connect.');
       }
     }
   );
@@ -497,8 +498,8 @@ async function startServer() {
     console.log(
       `Audit Management System server listening on port ${port} (${
         sqlCfg.configured
-          ? `Firebase SQL Connect active over HTTPS (csb-ams-2-service, asia-southeast1, mode=${sqlCfg.mode})`
-          : 'Firebase SQL Connect awaiting FIREBASE_SERVICE_ACCOUNT_KEY'
+          ? `Firebase Data Connect active over HTTPS (${DATA_CONNECT_CONFIG.serviceId}, ${DATA_CONNECT_CONFIG.location}, connector=${DATA_CONNECT_CONFIG.connector})`
+          : 'Firebase Data Connect awaiting FIREBASE_SERVICE_ACCOUNT_KEY'
       })`
     );
   });

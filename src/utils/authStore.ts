@@ -466,32 +466,26 @@ export async function loadUsers(): Promise<SystemUser[]> {
 
   const sqlStatus = await getSqlConnectStatus();
   if (sqlStatus.configured && sqlStatus.mode === 'primary') {
-    try {
-      const sqlRows = await fetchSqlSystemUsers();
-      if (sqlRows.length > 0) {
-        return sqlRows.map((d) => ({
-          id: String(d.id ?? ''),
-          username: String(d.username ?? ''),
-          fullName: String(d.fullName ?? ''),
-          email: String(d.email ?? ''),
-          role: d.role === 'admin' ? 'admin' : 'user',
-          appRole: typeof d.appRole === 'string' ? d.appRole : undefined,
-          scope: typeof d.scope === 'string' ? d.scope : undefined,
-          employeeNumber: typeof d.employeeNumber === 'string' ? d.employeeNumber : undefined,
-          passwordHash: '',
-          isActive: d.isActive !== false,
-          isLocked: d.isLocked === true,
-          failedLoginCount: 0,
-          requiresPasswordChange: false,
-          createdAt: '',
-          lastLogin: typeof d.lastLogin === 'string' ? d.lastLogin : null,
-          modifiedAt: typeof d.modifiedAt === 'string' ? d.modifiedAt : '',
-          source: 'system_user',
-        }));
-      }
-    } catch {
-      // Fall back to Firestore if SQL list fails
-    }
+    const sqlRows = await fetchSqlSystemUsers();
+    return sqlRows.map((d) => ({
+      id: String(d.id ?? ''),
+      username: String(d.username ?? ''),
+      fullName: String(d.fullName ?? ''),
+      email: String(d.email ?? ''),
+      role: d.role === 'admin' ? 'admin' : 'user',
+      appRole: typeof d.appRole === 'string' ? d.appRole : undefined,
+      scope: typeof d.scope === 'string' ? d.scope : undefined,
+      employeeNumber: typeof d.employeeNumber === 'string' ? d.employeeNumber : undefined,
+      passwordHash: '',
+      isActive: d.isActive !== false,
+      isLocked: d.isLocked === true,
+      failedLoginCount: 0,
+      requiresPasswordChange: false,
+      createdAt: '',
+      lastLogin: typeof d.lastLogin === 'string' ? d.lastLogin : null,
+      modifiedAt: typeof d.modifiedAt === 'string' ? d.modifiedAt : '',
+      source: 'system_user',
+    }));
   }
 
   const results: SystemUser[] = [];

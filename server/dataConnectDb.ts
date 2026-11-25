@@ -5,8 +5,8 @@ import {
   hasServiceAccountKey,
 } from './firebaseAdmin.ts';
 
-export type SqlEngine = 'http' | 'postgres' | 'mssql' | 'mysql';
-export type SqlConnectMode = 'sync' | 'primary';
+export type SqlEngine = 'https';
+export type SqlConnectMode = 'primary';
 
 export interface SqlConnectPublicConfig {
   configured: boolean;
@@ -87,71 +87,49 @@ type TableKey =
   | 'auditDivisionRiskScales'
   | 'appSessions';
 
-const TABLE_CANDIDATES: Record<TableKey, { queries: string[]; singulars: string[] }> = {
-  userProfiles: {
-    queries: ['userProfiles', 'userProfile', 'user_profiles'],
-    singulars: ['userProfile', 'user_profile'],
-  },
-  systemUsers: {
-    queries: ['systemUsers', 'systemUser', 'system_users'],
-    singulars: ['systemUser', 'system_user'],
-  },
-  engagements: {
-    queries: ['engagements', 'engagement'],
-    singulars: ['engagement'],
-  },
-  workingNotes: {
-    queries: ['workingNotes', 'workingNote', 'working_notes'],
-    singulars: ['workingNote', 'working_note'],
-  },
-  findings: {
-    queries: ['findings', 'finding'],
-    singulars: ['finding'],
-  },
+const TABLE_OPERATIONS: Record<
+  TableKey,
+  { query: string; upsert: string; delete: string }
+> = {
+  userProfiles: { query: 'userProfiles', upsert: 'userProfile_upsert', delete: 'userProfile_delete' },
+  systemUsers: { query: 'systemUsers', upsert: 'systemUser_upsert', delete: 'systemUser_delete' },
+  engagements: { query: 'engagements', upsert: 'engagement_upsert', delete: 'engagement_delete' },
+  workingNotes: { query: 'workingNotes', upsert: 'workingNote_upsert', delete: 'workingNote_delete' },
+  findings: { query: 'findings', upsert: 'finding_upsert', delete: 'finding_delete' },
   timelineActivities: {
-    queries: ['timelineActivities', 'timelineActivity', 'timeline_activities'],
-    singulars: ['timelineActivity', 'timeline_activity'],
+    query: 'timelineActivities',
+    upsert: 'timelineActivity_upsert',
+    delete: 'timelineActivity_delete',
   },
   engagementFiles: {
-    queries: ['engagementFiles', 'engagementFile', 'engagement_files'],
-    singulars: ['engagementFile', 'engagement_file'],
+    query: 'engagementFiles',
+    upsert: 'engagementFile_upsert',
+    delete: 'engagementFile_delete',
   },
-  activityLogs: {
-    queries: ['activityLogs', 'activityLog', 'activity_logs'],
-    singulars: ['activityLog', 'activity_log'],
-  },
+  activityLogs: { query: 'activityLogs', upsert: 'activityLog_upsert', delete: 'activityLog_delete' },
   issueRegisters: {
-    queries: ['issueRegisters', 'issueRegister', 'issuesRegisters', 'issues_register'],
-    singulars: ['issueRegister', 'issuesRegister', 'issue_register', 'issues_register'],
+    query: 'issueRegisters',
+    upsert: 'issueRegister_upsert',
+    delete: 'issueRegister_delete',
   },
   universeEntities: {
-    queries: ['universeEntities', 'universeEntity', 'universe_entities'],
-    singulars: ['universeEntity', 'universe_entity'],
+    query: 'universeEntities',
+    upsert: 'universeEntity_upsert',
+    delete: 'universeEntity_delete',
   },
-  sizingConfigs: {
-    queries: ['sizingConfigs', 'sizingConfig', 'sizing_configs'],
-    singulars: ['sizingConfig', 'sizing_config'],
-  },
+  sizingConfigs: { query: 'sizingConfigs', upsert: 'sizingConfig_upsert', delete: 'sizingConfig_delete' },
   auditFrequencies: {
-    queries: ['auditFrequencies', 'auditFrequency', 'audit_frequencies'],
-    singulars: ['auditFrequency', 'audit_frequency'],
+    query: 'auditFrequencies',
+    upsert: 'auditFrequency_upsert',
+    delete: 'auditFrequency_delete',
   },
-  masterDatas: {
-    queries: ['masterDatas', 'masterData', 'master_data', 'master_datas'],
-    singulars: ['masterData', 'master_data'],
-  },
+  masterDatas: { query: 'masterDatas', upsert: 'masterData_upsert', delete: 'masterData_delete' },
   auditDivisionRiskScales: {
-    queries: [
-      'auditDivisionRiskScales',
-      'auditDivisionRiskScale',
-      'audit_division_risk_scales',
-    ],
-    singulars: ['auditDivisionRiskScale', 'audit_division_risk_scale'],
+    query: 'auditDivisionRiskScales',
+    upsert: 'auditDivisionRiskScale_upsert',
+    delete: 'auditDivisionRiskScale_delete',
   },
-  appSessions: {
-    queries: ['appSessions', 'appSession', 'app_sessions'],
-    singulars: ['appSession', 'app_session'],
-  },
+  appSessions: { query: 'appSessions', upsert: 'appSession_upsert', delete: 'appSession_delete' },
 };
 
 const INTROSPECTION_QUERY = `
@@ -286,7 +264,7 @@ function toFriendlyDataConnectError(err: unknown): Error {
     rawMsg.includes('403')
   ) {
     return new Error(
-      `Firebase SQL Connect permission denied on service ${DATA_CONNECT_CONFIG.serviceId} (${DATA_CONNECT_CONFIG.location}). Ensure the Firebase Admin service account has the Firebase Data Connect Admin role (roles/firebasedataconnect.admin) in Google Cloud IAM.`
+      `Firebase Data Connect permission denied on service ${DATA_CONNECT_CONFIG.serviceId} (${DATA_CONNECT_CONFIG.location}). Ensure the Firebase Admin service account has the Firebase Data Connect Admin role (roles/firebasedataconnect.admin) in Google Cloud IAM.`
     );
   }
   return err instanceof Error ? err : new Error(rawMsg);
@@ -300,7 +278,7 @@ export function getSqlPublicConfig(): SqlConnectPublicConfig {
   const configured = hasSqlConfig();
   return {
     configured,
-    engine: configured ? 'http' : null,
+    engine: configured ? 'https' : null,
     mode: 'primary',
   };
 }
@@ -332,27 +310,23 @@ async function getSchemaCache(): Promise<IntrospectedSchemaCache> {
           if (t.name) typesByName.set(t.name, t);
         }
 
-        const queryByNorm = new Map<string, GqlFieldDef>();
-        for (const q of queryFields) {
-          queryByNorm.set(normalizeName(q.name), q);
-        }
-
-        const mutationByNorm = new Map<string, GqlFieldDef>();
-        for (const m of mutationFields) {
-          mutationByNorm.set(normalizeName(m.name), m);
-        }
-
         const tables = new Map<TableKey, IntrospectedTableMeta>();
 
-        (Object.keys(TABLE_CANDIDATES) as TableKey[]).forEach((tableKey) => {
-          const cand = TABLE_CANDIDATES[tableKey];
-          let matchedQuery: GqlFieldDef | undefined;
-          for (const qName of cand.queries) {
-            matchedQuery =
-              queryFields.find((f) => f.name === qName) ?? queryByNorm.get(normalizeName(qName));
-            if (matchedQuery) break;
+        (Object.keys(TABLE_OPERATIONS) as TableKey[]).forEach((tableKey) => {
+          const operation = TABLE_OPERATIONS[tableKey];
+          const matchedQuery = queryFields.find((field) => field.name === operation.query);
+          const matchedUpsert = mutationFields.find((field) => field.name === operation.upsert);
+          const matchedDelete = mutationFields.find((field) => field.name === operation.delete);
+          if (!matchedQuery || !matchedUpsert || !matchedDelete) {
+            const missingOperations = [
+              !matchedQuery ? operation.query : '',
+              !matchedUpsert ? operation.upsert : '',
+              !matchedDelete ? operation.delete : '',
+            ].filter(Boolean);
+            throw new Error(
+              `Firebase Data Connect schema is missing expected operations: ${missingOperations.join(', ')}.`
+            );
           }
-          if (!matchedQuery) return;
 
           const returnTypeInfo = unwrapType(matchedQuery.type);
           const objType = returnTypeInfo.baseName ? typesByName.get(returnTypeInfo.baseName) : undefined;
@@ -375,18 +349,6 @@ async function getSchemaCache(): Promise<IntrospectedSchemaCache> {
             selectParts.push('id');
           }
 
-          let matchedUpsert: GqlFieldDef | undefined;
-          for (const s of cand.singulars) {
-            matchedUpsert =
-              mutationFields.find((m) => m.name === `${s}_upsert`) ??
-              mutationByNorm.get(normalizeName(`${s}_upsert`)) ??
-              mutationByNorm.get(normalizeName(`upsert_${s}`));
-            if (matchedUpsert) break;
-          }
-          if (!matchedUpsert) {
-            matchedUpsert = mutationByNorm.get(normalizeName(`${matchedQuery.name}_upsert`));
-          }
-
           let upsertDataArgName = 'data';
           let upsertInputTypeName: string | null = null;
           const upsertInputFields = new Map<string, GqlTypeRef>();
@@ -402,15 +364,6 @@ async function getSchemaCache(): Promise<IntrospectedSchemaCache> {
                 upsertInputFields.set(inf.name, inf.type);
               }
             }
-          }
-
-          let matchedDelete: GqlFieldDef | undefined;
-          for (const s of cand.singulars) {
-            matchedDelete =
-              mutationFields.find((m) => m.name === `${s}_delete`) ??
-              mutationByNorm.get(normalizeName(`${s}_delete`)) ??
-              mutationByNorm.get(normalizeName(`delete_${s}`));
-            if (matchedDelete) break;
           }
 
           const deleteArgs = (matchedDelete?.args ?? []).map((a) => {
@@ -438,6 +391,15 @@ async function getSchemaCache(): Promise<IntrospectedSchemaCache> {
             deleteArgs,
           });
         });
+
+        const missingTables = (Object.keys(TABLE_OPERATIONS) as TableKey[]).filter(
+          (tableKey) => !tables.has(tableKey)
+        );
+        if (missingTables.length > 0) {
+          throw new Error(
+            `Firebase Data Connect schema is missing expected table operations: ${missingTables.join(', ')}.`
+          );
+        }
 
         const built: IntrospectedSchemaCache = { tables, typesByName };
         globalThis._amsDcSchemaCache = built;
@@ -525,7 +487,9 @@ function coerceValueForInputField(
 async function listTableRows(tableKey: TableKey): Promise<Record<string, unknown>[]> {
   const cache = await getSchemaCache();
   const meta = cache.tables.get(tableKey);
-  if (!meta) return [];
+  if (!meta) {
+    throw new Error(`Firebase Data Connect query for "${tableKey}" is not available.`);
+  }
 
   const dc = getAdminDataConnect();
   const query = `query List_${tableKey} { ${meta.queryFieldName} { ${meta.selectClause} } }`;
@@ -547,13 +511,24 @@ async function upsertTableRow(
   const cache = await getSchemaCache();
   const meta = cache.tables.get(tableKey);
   if (!meta || !meta.upsertMutationName || !meta.upsertInputTypeName) {
-    throw new Error(`Firebase SQL Connect table "${tableKey}" upsert mutation is not available.`);
+    throw new Error(`Firebase Data Connect table "${tableKey}" upsert mutation is not available.`);
   }
 
   const aliasMap = buildFieldAliases(canonicalPayload);
   const dataPayload: Record<string, unknown> = {};
+  const expressionBases = new Set(
+    Array.from(meta.upsertInputFields.keys())
+      .filter((name) => /^(createdAt|updatedAt|modifiedAt)_expr$/.test(name))
+      .map((name) => name.slice(0, -5))
+  );
 
   for (const [fieldName, fieldType] of meta.upsertInputFields.entries()) {
+    if (/^(createdAt|updatedAt|modifiedAt)_expr$/.test(fieldName)) {
+      dataPayload[fieldName] = 'request.time';
+      continue;
+    }
+    if (expressionBases.has(fieldName)) continue;
+
     let rawVal = aliasMap.get(fieldName);
     if (rawVal === undefined) {
       rawVal = aliasMap.get(normalizeName(fieldName));
@@ -589,7 +564,7 @@ async function deleteTableRowById(
   const cache = await getSchemaCache();
   const meta = cache.tables.get(tableKey);
   if (!meta || !meta.deleteMutationName || meta.deleteArgs.length === 0) {
-    return;
+    throw new Error(`Firebase Data Connect table "${tableKey}" delete mutation is not available.`);
   }
 
   const varDefs: string[] = [];
@@ -742,6 +717,9 @@ export async function upsertSqlSystemUser(user: {
   if (!mail) return;
   const safeId = sanitizeId(user.id || mail.replace(/[^a-z0-9]/g, '_'));
   const nowIso = new Date().toISOString();
+  const existing = (await listTableRows('systemUsers')).find(
+    (row) => strField(row, 'email').trim().toLowerCase() === mail
+  );
 
   await upsertTableRow('systemUsers', {
     id: safeId,
@@ -749,12 +727,11 @@ export async function upsertSqlSystemUser(user: {
     fullName: clampStr(user.fullName || mail.split('@')[0], 160),
     email: mail,
     role: user.role === 'admin' ? 'admin' : 'user',
-    appRole: user.appRole ? clampStr(user.appRole, 80) : null,
-    scope: user.scope ? clampStr(user.scope, 240) : null,
-    employeeNumber: user.employeeNumber ? clampStr(user.employeeNumber, 64) : null,
+    passwordHash: strField(existing ?? {}, 'passwordHash'),
     isActive: Boolean(user.isActive),
     isLocked: Boolean(user.isLocked),
-    lastLogin: nowIso,
+    failedLoginCount: numField(existing ?? {}, 0, 'failedLoginCount'),
+    requiresPasswordChange: boolField(existing ?? {}, false, 'requiresPasswordChange'),
     modifiedAt: nowIso,
   });
 }
@@ -775,21 +752,29 @@ export async function upsertSqlUserProfile(
   if (!hasSqlConfig()) return;
   const safeId = sanitizeId(profile.id, 'user');
   const nowIso = new Date().toISOString();
+  const existing = Array.isArray(profile.passwordHistory)
+    ? undefined
+    : (await listTableRows('userProfiles')).find((row) => strField(row, 'id') === safeId);
 
   await upsertTableRow('userProfiles', {
     id: safeId,
     name: clampStr(profile.name, 160, 'User'),
-    email: typeof profile.email === 'string' && profile.email.trim() ? clampStr(profile.email.toLowerCase(), 160) : null,
     roleTitle: clampStr(profile.roleTitle, 160),
     fullLabel: clampStr(profile.fullLabel, 240),
     headerSubtitle: clampStr(profile.headerSubtitle, 160),
     department: clampStr(profile.department, 160),
     canApproveHead: Boolean(profile.canApproveHead),
     canApproveIndependent: Boolean(profile.canApproveIndependent),
-    canApproveCAE: Boolean(profile.canApproveCAE),
+    canApproveCae: Boolean(profile.canApproveCAE),
     employeeNumber: typeof profile.employeeNumber === 'string' ? clampStr(profile.employeeNumber, 64) : null,
     lastLoginDate: typeof profile.lastLoginDate === 'string' ? clampStr(profile.lastLoginDate, 64) : null,
     accountModifiedAt: typeof profile.accountModifiedAt === 'string' ? clampStr(profile.accountModifiedAt, 64) : null,
+    passwordHistory: (Array.isArray(profile.passwordHistory)
+      ? profile.passwordHistory
+      : Array.isArray(existing?.passwordHistory)
+        ? existing.passwordHistory
+        : []
+    ).filter((item): item is string => typeof item === 'string'),
     accountStatus: clampStr(profile.accountStatus, 40, 'Active'),
     failedLoginCount: Math.round(clampNum(profile.failedLoginCount ?? 0, 0, 100, 0)),
     isLocked: Boolean(profile.isLocked),
@@ -908,13 +893,9 @@ export async function upsertSqlFinding(
     title: clampStr(finding.title, 240, 'Finding'),
     severity: clampStr(finding.severity, 32, 'Medium'),
     category: typeof finding.category === 'string' ? clampStr(finding.category, 120) : null,
-    conditionText: clampStr(finding.condition, 8000),
     condition: clampStr(finding.condition, 8000),
-    criteriaText: clampStr(finding.criteria, 4000),
     criteria: clampStr(finding.criteria, 4000),
-    causeText: clampStr(finding.cause, 4000),
     cause: clampStr(finding.cause, 4000),
-    effectText: clampStr(finding.effect, 4000),
     effect: clampStr(finding.effect, 4000),
     recommendation: clampStr(finding.recommendation, 8000),
     owner: clampStr(finding.owner, 160),
@@ -960,7 +941,6 @@ export async function insertSqlFile(
     engagementId: safeEngId,
     name: clampStr(file.name, 200),
     folder: clampStr(file.folder, 120),
-    sizeLabel: clampStr(file.size, 40),
     size: clampStr(file.size, 40),
     uploadedBy: clampStr(file.uploadedBy, 160),
     uploadedAt: clampStr(file.uploadedAt, 64),
@@ -978,7 +958,6 @@ export async function insertSqlActivityLog(
   await upsertTableRow('activityLogs', {
     id: safeLogId,
     engagementId: safeEngId,
-    timestampLabel: clampStr(log.timestamp, 64),
     timestamp: clampStr(log.timestamp, 64),
     actor: clampStr(log.actor, 160),
     action: clampStr(log.action, 400),
@@ -1072,9 +1051,6 @@ export async function saveSqlFrequencies(
     high,
     medium,
     low,
-    highMonths: high,
-    mediumMonths: medium,
-    lowMonths: low,
     addedBy: clampStr(actorEmail, 160),
     modifiedBy: clampStr(actorEmail, 160),
     updatedAt: nowIso,
@@ -1090,10 +1066,9 @@ export async function saveSqlMasterData(
   if (!hasSqlConfig()) return;
   const safeKey = sanitizeId(key);
   const nowIso = new Date().toISOString();
-  const jsonStr = JSON.stringify(value ?? null);
-  const cache = await getSchemaCache();
+  await getSchemaCache();
 
-  if (safeKey === 'sizing_configs' && Array.isArray(value) && cache.tables.has('sizingConfigs')) {
+  if (safeKey === 'sizing_configs' && Array.isArray(value)) {
     for (let idx = 0; idx < value.length; idx += 1) {
       const item = value[idx];
       if (!item || typeof item !== 'object') continue;
@@ -1112,8 +1087,7 @@ export async function saveSqlMasterData(
 
   if (
     safeKey === 'audit_division_risk_scales' &&
-    Array.isArray(value) &&
-    cache.tables.has('auditDivisionRiskScales')
+    Array.isArray(value)
   ) {
     for (let idx = 0; idx < value.length; idx += 1) {
       const item = value[idx];
@@ -1131,50 +1105,43 @@ export async function saveSqlMasterData(
     }
   }
 
-  if (cache.tables.has('masterDatas')) {
-    await upsertTableRow('masterDatas', {
-      id: safeKey,
-      dataKey: safeKey,
-      key: safeKey,
-      dataJson: jsonStr,
-      value: jsonStr,
-      data: jsonStr,
-      addedBy: clampStr(actorEmail, 160),
-      modifiedBy: clampStr(actorEmail, 160),
-      modifiedAt: nowIso,
-      updatedAt: nowIso,
-    });
-  }
+  await upsertTableRow('masterDatas', {
+    id: safeKey,
+    data: value === null || value === undefined ? 'null' : value,
+    addedBy: clampStr(actorEmail, 160),
+    modifiedBy: clampStr(actorEmail, 160),
+    modifiedAt: nowIso,
+    updatedAt: nowIso,
+  });
 }
 
 export async function fetchSqlMasterDataValue(key: string): Promise<unknown> {
   if (!hasSqlConfig()) return null;
   const safeKey = sanitizeId(key);
-  const cache = await getSchemaCache();
+  await getSchemaCache();
 
-  if (safeKey === 'sizing_configs' && cache.tables.has('sizingConfigs')) {
+  if (safeKey === 'sizing_configs') {
     const rows = await listTableRows('sizingConfigs');
     if (rows.length > 0) {
       return rows;
     }
   }
 
-  if (safeKey === 'audit_division_risk_scales' && cache.tables.has('auditDivisionRiskScales')) {
+  if (safeKey === 'audit_division_risk_scales') {
     const rows = await listTableRows('auditDivisionRiskScales');
     if (rows.length > 0) {
       return rows;
     }
   }
 
-  if (!cache.tables.has('masterDatas')) return null;
   const rows = await listTableRows('masterDatas');
   const match = rows.find((r) => {
-    const k = strField(r, 'dataKey', 'data_key', 'key', 'id');
+    const k = strField(r, 'id');
     return k === safeKey || k === key;
   });
   if (!match) return null;
 
-  const raw = match.dataJson ?? match.data_json ?? match.value ?? match.data;
+  const raw = match.data;
   if (typeof raw === 'string') {
     try {
       return JSON.parse(raw);
@@ -1195,27 +1162,19 @@ export async function upsertDataConnectAppSession(session: {
   expiresAt?: string;
 }): Promise<void> {
   if (!hasSqlConfig()) return;
-  const cache = await getSchemaCache();
-  if (!cache.tables.has('appSessions')) return;
-
+  await getSchemaCache();
   const nowIso = new Date().toISOString();
   await upsertTableRow('appSessions', {
-    id: sanitizeId(session.id, `sess-${Date.now()}`),
+    tokenHash: sanitizeId(session.id, `sess-${Date.now()}`),
     userId: clampStr(session.userId ?? '', 128),
-    email: clampStr((session.email ?? '').toLowerCase(), 160),
-    role: clampStr(session.role ?? 'user', 40),
-    appRole: session.appRole ? clampStr(session.appRole, 80) : null,
-    issuedAt: session.issuedAt || nowIso,
     expiresAt: session.expiresAt || nowIso,
-    updatedAt: nowIso,
   });
 }
 
 export async function deleteDataConnectAppSession(id: string): Promise<void> {
   if (!hasSqlConfig()) return;
-  const cache = await getSchemaCache();
-  if (!cache.tables.has('appSessions')) return;
-  await deleteTableRowById('appSessions', { id: sanitizeId(id) });
+  await getSchemaCache();
+  await deleteTableRowById('appSessions', { tokenHash: sanitizeId(id) });
 }
 
 export async function fetchSqlWorkspaceSnapshot(includeAdminEmails: boolean): Promise<{
@@ -1226,7 +1185,7 @@ export async function fetchSqlWorkspaceSnapshot(includeAdminEmails: boolean): Pr
   frequencies: { high: number; medium: number; low: number };
 }> {
   if (!hasSqlConfig()) {
-    throw new Error('Firebase SQL Connect service account is not configured.');
+    throw new Error('Firebase Data Connect service account is not configured.');
   }
 
   await ensureSqlSchema();
@@ -1283,10 +1242,10 @@ export async function fetchSqlWorkspaceSnapshot(includeAdminEmails: boolean): Pr
     title: strField(r, 'title'),
     severity: strField(r, 'severity') || 'Medium',
     category: optStrField(r, 'category') ?? 'General',
-    condition: strField(r, 'conditionText', 'condition_text', 'condition'),
-    criteria: strField(r, 'criteriaText', 'criteria_text', 'criteria'),
-    cause: strField(r, 'causeText', 'cause_text', 'cause'),
-    effect: strField(r, 'effectText', 'effect_text', 'effect'),
+    condition: strField(r, 'condition'),
+    criteria: strField(r, 'criteria'),
+    cause: strField(r, 'cause'),
+    effect: strField(r, 'effect'),
     recommendation: strField(r, 'recommendation'),
     owner: strField(r, 'owner'),
     targetDate: strField(r, 'targetDate', 'target_date'),
@@ -1311,14 +1270,14 @@ export async function fetchSqlWorkspaceSnapshot(includeAdminEmails: boolean): Pr
     id: strField(r, 'id'),
     name: strField(r, 'name'),
     folder: strField(r, 'folder'),
-    size: strField(r, 'sizeLabel', 'size_label', 'size'),
+    size: strField(r, 'size'),
     uploadedBy: strField(r, 'uploadedBy', 'uploaded_by'),
     uploadedAt: strField(r, 'uploadedAt', 'uploaded_at'),
   }));
 
   const logMap = groupByEng(logRows, (r) => ({
     id: strField(r, 'id'),
-    timestamp: strField(r, 'timestampLabel', 'timestamp_label', 'timestamp'),
+    timestamp: strField(r, 'timestamp'),
     actor: strField(r, 'actor'),
     action: strField(r, 'action'),
     detail: optStrField(r, 'detail'),
@@ -1435,7 +1394,7 @@ export async function fetchSqlWorkspaceSnapshot(includeAdminEmails: boolean): Pr
     department: strField(r, 'department'),
     canApproveHead: boolField(r, false, 'canApproveHead', 'can_approve_head'),
     canApproveIndependent: boolField(r, false, 'canApproveIndependent', 'can_approve_independent'),
-    canApproveCAE: boolField(r, false, 'canApproveCAE', 'can_approve_cae'),
+    canApproveCAE: boolField(r, false, 'canApproveCae'),
     employeeNumber: optStrField(r, 'employeeNumber', 'employee_number'),
     lastLoginDate: optStrField(r, 'lastLoginDate', 'last_login_date'),
     accountModifiedAt: optStrField(r, 'accountModifiedAt', 'account_modified_at'),
@@ -1448,16 +1407,18 @@ export async function fetchSqlWorkspaceSnapshot(includeAdminEmails: boolean): Pr
       'requiresPasswordChange',
       'requires_password_change'
     ),
-    passwordHistory: [],
+    passwordHistory: Array.isArray(r.passwordHistory)
+      ? r.passwordHistory.filter((item): item is string => typeof item === 'string')
+      : [],
     mfaEnabled: boolField(r, false, 'mfaEnabled', 'mfa_enabled'),
     isPrivileged: boolField(r, false, 'isPrivileged', 'is_privileged'),
   }));
 
   const freqRow = freqRows.find((r) => strField(r, 'id') === 'global') ?? freqRows[0];
   const frequencies = {
-    high: freqRow ? numField(freqRow, 12, 'highMonths', 'high_months', 'high') : 12,
-    medium: freqRow ? numField(freqRow, 36, 'mediumMonths', 'medium_months', 'medium') : 36,
-    low: freqRow ? numField(freqRow, 48, 'lowMonths', 'low_months', 'low') : 48,
+    high: freqRow ? numField(freqRow, 12, 'high') : 12,
+    medium: freqRow ? numField(freqRow, 36, 'medium') : 36,
+    low: freqRow ? numField(freqRow, 48, 'low') : 48,
   };
 
   return { engagements, issues, universe, userProfiles, frequencies };
@@ -1476,7 +1437,7 @@ export async function syncWorkspaceSnapshotToSql(
   actorEmail: string
 ): Promise<{ syncedCount: number }> {
   if (!hasSqlConfig()) {
-    throw new Error('Firebase SQL Connect service account is not configured.');
+    throw new Error('Firebase Data Connect service account is not configured.');
   }
   await ensureSqlSchema();
 
