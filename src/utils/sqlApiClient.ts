@@ -11,6 +11,22 @@ import type {
   WorkingNote,
 } from '../data/auditData';
 
+function getApiBaseUrl(): string {
+  const env = import.meta.env as ImportMetaEnv & {
+    VITE_API_URL?: string;
+    APP_URL?: string;
+  };
+  const configured = (env.VITE_API_URL ?? env.APP_URL ?? '').trim();
+  return configured.replace(/\/+$/, '');
+}
+
+function apiUrl(path: string): string {
+  const baseUrl = getApiBaseUrl();
+  if (!baseUrl) return path;
+  if (!path.startsWith('/')) return `${baseUrl}/${path}`;
+  return `${baseUrl}${path}`;
+}
+
 export interface SqlConnectStatus {
   configured: boolean;
   engine: 'https' | null;
@@ -88,7 +104,11 @@ export async function getSqlConnectStatus(): Promise<SqlConnectStatus> {
 
   inflightStatus = (async () => {
     try {
-      const res = await fetch('/api/sql/status');
+      const headers = await getBearerHeaders();
+      const res = await fetch(apiUrl('/api/sql/status'), {
+        headers: headers ?? undefined,
+        credentials: 'include',
+      });
       if (!res.ok) {
         throw await readApiError(res, 'Firebase Data Connect status API error');
       }
@@ -128,9 +148,10 @@ async function requestSqlApi<T>(
   if (!headers) {
     throw new Error('Authentication required for Firebase Data Connect.');
   }
-  const res = await fetch(path, {
+  const res = await fetch(apiUrl(path), {
     method,
     headers,
+    credentials: 'include',
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   if (!res.ok) {
