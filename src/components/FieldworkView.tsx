@@ -16,7 +16,7 @@ import {
 } from '../utils/security';
 import { fetchMasterData } from '../utils/db';
 import { formatDateForDisplay, toDateInputValue } from '../utils/date';
-import { formatIdentifier, normalizeLegacyIdentifier } from '../utils/identifiers';
+import { formatIdentifier, nextIdentifierSequence, normalizeLegacyIdentifier } from '../utils/identifiers';
 
 const DEFAULT_FINDING_SEVERITIES = ['Critical', 'High', 'Medium', 'Low'];
 const DEFAULT_FINDING_CATEGORIES = [
@@ -45,8 +45,8 @@ interface FieldworkViewProps {
     noteId: string,
     newStatus: WorkingNote['status'],
     comment?: string
-  ) => void;
-  onCompleteActivity: (engagementId: string, activityId: string) => void;
+  ) => Promise<void> | void;
+  onCompleteActivity: (engagementId: string, activityId: string) => Promise<void> | void;
   onAddWorkingNote: (
     engagementId: string,
     title: string,
@@ -54,23 +54,23 @@ interface FieldworkViewProps {
     procedure: string,
     observations: string,
     conclusion: WorkingNote['conclusion']
-  ) => void;
-  onAddFinding?: (engagementId: string, finding: AuditFinding) => void;
+  ) => Promise<void> | void;
+  onAddFinding?: (engagementId: string, finding: AuditFinding) => Promise<void> | void;
   onUpdateFindingStatus?: (
     engagementId: string,
     findingId: string,
     newStatus: AuditFinding['status'],
     owner?: string,
     targetDate?: string
-  ) => void;
-  onUploadFile?: (engagementId: string, file: AuditFile) => void;
+  ) => Promise<void> | void;
+  onUploadFile?: (engagementId: string, file: AuditFile) => Promise<void> | void;
   onUpdateReport?: (
     engagementId: string,
     newStatus: AuditEngagement['reportStatus'],
     executiveSummary: string,
     reportRating?: string
-  ) => void;
-  onAdvanceEngagementStage?: (stageId: LifecycleStageId) => void;
+  ) => Promise<void> | void;
+  onAdvanceEngagementStage?: (stageId: LifecycleStageId) => Promise<void> | void;
 }
 
 interface AuditeeInquiry {
@@ -106,7 +106,7 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
   const [selectedNoteModal, setSelectedNoteModal] = useState<WorkingNote | null>(null);
   const [reviewComment, setReviewComment] = useState('');
   const [securityBanner, setSecurityBanner] = useState<string | null>(null);
-  const [actionToast, setActionToast] = useState<string | null>(null);
+  const [actionToast, setActionToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [showCockpitModal, setShowCockpitModal] = useState(false);
 
   // Working notes sub-tab state
@@ -200,9 +200,9 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
   // Audit trail sub-tab state
   const [trailSearch, setTrailSearch] = useState('');
 
-  const notify = (msg: string) => {
-    setActionToast(msg);
-    setTimeout(() => setActionToast(null), 4000);
+  const notify = (msg: string, type: 'success' | 'error' = 'success') => {
+    setActionToast({ type, msg });
+    setTimeout(() => setActionToast(null), type === 'error' ? 6000 : 4000);
   };
 
   // Ongoing audits (Reporting or In progress)
@@ -259,6 +259,25 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
 
     return (
       <div className="space-y-4">
+        {actionToast && (
+          <div
+            role={actionToast.type === 'error' ? 'alert' : 'status'}
+            className={`px-4 py-2.5 rounded-md flex items-center justify-between text-xs font-medium ${
+              actionToast.type === 'error'
+                ? 'bg-rose-50 border border-rose-300 text-rose-900'
+                : 'bg-[#E4DDF8] border border-[#542D84]/30 text-[#492785]'
+            }`}
+          >
+            <span>{actionToast.msg}</span>
+            <button
+              type="button"
+              onClick={() => setActionToast(null)}
+              className="font-bold ml-4 cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+        )}
         {/* Working As Card */}
         <div className="bg-white rounded-lg border border-slate-200/90 shadow-2xs px-6 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
           {canSimulateRole ? (
@@ -533,11 +552,11 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
     { id: 'audit-trail', label: 'Audit trail' },
   ];
 
-  const handleReviewAction = (
+  const handleReviewAction = async (
     note: WorkingNote,
     targetStatus: WorkingNote['status'],
     rawComment?: string
-  ) => {
+  ): Promise<boolean> => {
     setSecurityBanner(null);
     if (targetStatus === 'Cleared') {
       const check = checkWorkingNoteReviewPermission(
@@ -548,35 +567,45 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
       );
       if (!check.allowed) {
         setSecurityBanner(check.reason || 'Access denied by Segregation of Duties policy.');
-        return;
+        return false;
       }
     }
     const cleanComment = rawComment ? sanitizeMultiline(rawComment, 800) : undefined;
-    onApproveWorkingNote(eng.id, note.id, targetStatus, cleanComment);
-    notify(`${note.ref} updated to "${targetStatus}" by ${currentUser.name}.`);
+    try {
+      await onApproveWorkingNote(eng.id, note.id, targetStatus, cleanComment);
+      notify(`${note.ref} updated to "${targetStatus}" by ${currentUser.name}.`);
+      return true;
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Unable to save working note review.', 'error');
+      return false;
+    }
   };
 
-  const handleCreateWorkingNote = (e: React.FormEvent) => {
+  const handleCreateWorkingNote = async (e: React.FormEvent) => {
     e.preventDefault();
     const safeTitle = sanitizeText(noteTitle, 160);
     const safeArea = sanitizeText(noteArea, 100);
     const safeProcedure = sanitizeMultiline(noteProc, 1000);
     const safeObservations = sanitizeMultiline(noteObservations, 1000);
     if (!safeTitle || !safeArea || !safeProcedure || !safeObservations) {
-      notify('Complete all required working note fields before saving.');
+      notify('Complete all required working note fields before saving.', 'error');
       return;
     }
-    onAddWorkingNote(eng.id, safeTitle, safeArea, safeProcedure, safeObservations, noteConclusion);
-    setNoteTitle('');
-    setNoteArea('');
-    setNoteProc('');
-    setNoteObservations('');
-    setNoteConclusion('Not concluded');
-    setShowNewNoteModal(false);
-    notify(`Working note "${safeTitle}" created and submitted for review.`);
+    try {
+      await onAddWorkingNote(eng.id, safeTitle, safeArea, safeProcedure, safeObservations, noteConclusion);
+      setNoteTitle('');
+      setNoteArea('');
+      setNoteProc('');
+      setNoteObservations('');
+      setNoteConclusion('Not concluded');
+      setShowNewNoteModal(false);
+      notify(`Working note "${safeTitle}" created and submitted for review.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Unable to save working note.', 'error');
+    }
   };
 
-  const handleCreateFinding = (e: React.FormEvent) => {
+  const handleCreateFinding = async (e: React.FormEvent) => {
     e.preventDefault();
     const safeTitle = sanitizeText(fndTitle, 180);
     const condition = sanitizeMultiline(fndCondition, 800);
@@ -600,13 +629,14 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
       !targetDate ||
       !linkedNote
     ) {
-      notify('Complete all required finding fields and select a valid supporting working note.');
+      notify('Complete all required finding fields and select a valid supporting working note.', 'error');
       return;
     }
-    const nextIdx = eng.findings.length + 1;
+    const nextIdx = nextIdentifierSequence(eng.findings, 'FN');
+    const findingRef = formatIdentifier('FN', nextIdx);
     const newFinding: AuditFinding = {
-      id: formatIdentifier('FN', nextIdx).toLowerCase(),
-      ref: formatIdentifier('FN', nextIdx),
+      id: `${eng.id}-${findingRef.toLowerCase()}`,
+      ref: findingRef,
       title: safeTitle,
       severity: fndSeverity,
       category: fndCategory,
@@ -620,21 +650,25 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
       status: 'Open',
       linkedNoteRef: linkedNote.ref,
     };
-    onAddFinding?.(eng.id, newFinding);
-    setFndTitle('');
-    setFndCondition('');
-    setFndCriteria('');
-    setFndCause('');
-    setFndEffect('');
-    setFndRecommendation('');
-    setFndOwner('');
-    setFndTargetDate('');
-    setFndLinkedNote('');
-    setShowNewFindingModal(false);
-    notify(`Finding ${newFinding.ref} added and linked to ${newFinding.linkedNoteRef}.`);
+    try {
+      await onAddFinding?.(eng.id, newFinding);
+      setFndTitle('');
+      setFndCondition('');
+      setFndCriteria('');
+      setFndCause('');
+      setFndEffect('');
+      setFndRecommendation('');
+      setFndOwner('');
+      setFndTargetDate('');
+      setFndLinkedNote('');
+      setShowNewFindingModal(false);
+      notify(`Finding ${newFinding.ref} added and linked to ${newFinding.linkedNoteRef}.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Unable to save audit finding.', 'error');
+    }
   };
 
-  const handleUploadNewFile = (e: React.FormEvent) => {
+  const handleUploadNewFile = async (e: React.FormEvent) => {
     e.preventDefault();
     const check = validateFileUpload(uploadFileName, uploadSizeKB);
     if (!check.valid) {
@@ -642,17 +676,23 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
       return;
     }
     setSecurityBanner(null);
+    const nextFileSeq = nextIdentifierSequence(eng.files, 'AF');
+    const fileRef = formatIdentifier('AF', nextFileSeq).toLowerCase();
     const createdFile: AuditFile = {
-      id: formatIdentifier('AF', eng.files.length + 1).toLowerCase(),
+      id: `${eng.id}-${fileRef}-${Date.now().toString(36)}`,
       name: check.sanitizedName,
       folder: uploadFolder,
       size: `${uploadSizeKB} KB`,
       uploadedBy: currentUser.name,
       uploadedAt: '4 Oct 2026, 14:35',
     };
-    onUploadFile?.(eng.id, createdFile);
-    setUploadFileName('');
-    notify(`Uploaded ${createdFile.name} to folder "${createdFile.folder}".`);
+    try {
+      await onUploadFile?.(eng.id, createdFile);
+      setUploadFileName('');
+      notify(`Uploaded ${createdFile.name} to folder "${createdFile.folder}".`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Unable to save uploaded file metadata.', 'error');
+    }
   };
 
   const filteredNotes = eng.workingNotes.filter((wn) => {
@@ -717,8 +757,15 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
       )}
 
       {actionToast && (
-        <div className="px-4 py-2.5 bg-[#E4DDF8] border border-[#542D84]/30 rounded-md flex items-center justify-between text-xs text-[#492785] font-medium">
-          <span>{actionToast}</span>
+        <div
+          role={actionToast.type === 'error' ? 'alert' : 'status'}
+          className={`px-4 py-2.5 rounded-md flex items-center justify-between text-xs font-medium ${
+            actionToast.type === 'error'
+              ? 'bg-rose-50 border border-rose-300 text-rose-900'
+              : 'bg-[#E4DDF8] border border-[#542D84]/30 text-[#492785]'
+          }`}
+        >
+          <span>{actionToast.msg}</span>
           <button
             type="button"
             onClick={() => setActionToast(null)}
@@ -982,7 +1029,13 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
                       </div>
                       <button
                         type="button"
-                        onClick={() => onCompleteActivity(eng.id, act.id)}
+                        onClick={async () => {
+                          try {
+                            await onCompleteActivity(eng.id, act.id);
+                          } catch (error) {
+                            notify(error instanceof Error ? error.message : 'Unable to mark timeline activity complete.', 'error');
+                          }
+                        }}
                         className="px-2.5 py-1 bg-slate-100 hover:bg-purple-50 text-slate-700 hover:text-[#542D84] rounded text-[11px] font-semibold cursor-pointer shrink-0"
                       >
                         Mark done
@@ -1400,9 +1453,13 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
               {onAdvanceEngagementStage && (
                 <button
                   type="button"
-                  onClick={() => {
-                    onAdvanceEngagementStage(5);
-                    notify('Action plans locked and promoted to Stage 05 Issue Monitoring.');
+                  onClick={async () => {
+                    try {
+                      await onAdvanceEngagementStage(5);
+                      notify('Action plans locked and promoted to Stage 05 Issue Monitoring.');
+                    } catch (error) {
+                      notify(error instanceof Error ? error.message : 'Unable to advance engagement stage.', 'error');
+                    }
                   }}
                   className="px-3.5 py-1.5 bg-[#542D84] hover:bg-[#412268] text-white text-xs font-semibold rounded-md cursor-pointer"
                 >
@@ -1497,16 +1554,21 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
                       <button
                         type="button"
                         disabled={!planDateInput}
-                        onClick={() => {
-                          onUpdateFindingStatus?.(
-                            eng.id,
-                            editingFindingPlan.id,
-                            'Action plan submitted',
-                            sanitizeText(planOwnerInput, 80),
-                            formatDateForDisplay(sanitizeText(planDateInput, 40))
-                          );
-                          setEditingFindingPlan(null);
-                          notify(`Management action plan committed for ${editingFindingPlan.ref}.`);
+                        onClick={async () => {
+                          try {
+                            await onUpdateFindingStatus?.(
+                              eng.id,
+                              editingFindingPlan.id,
+                              'Action plan submitted',
+                              sanitizeText(planOwnerInput, 80),
+                              formatDateForDisplay(sanitizeText(planDateInput, 40))
+                            );
+                            const ref = editingFindingPlan.ref;
+                            setEditingFindingPlan(null);
+                            notify(`Management action plan committed for ${ref}.`);
+                          } catch (error) {
+                            notify(error instanceof Error ? error.message : 'Unable to save management action plan.', 'error');
+                          }
                         }}
                         className="px-3.5 py-1.5 bg-[#542D84] text-white font-semibold rounded cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                       >
@@ -1826,12 +1888,18 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
                 <select
                   aria-label="Overall audit opinion"
                   value={eng.reportRating ?? reportRatings[0] ?? ''}
-                  onChange={(e) => onUpdateReport?.(
-                    eng.id,
-                    eng.reportStatus,
-                    sanitizeMultiline(execSummaryDraft || eng.executiveSummary, 1500),
-                    e.target.value
-                  )}
+                  onChange={async (e) => {
+                    try {
+                      await onUpdateReport?.(
+                        eng.id,
+                        eng.reportStatus,
+                        sanitizeMultiline(execSummaryDraft || eng.executiveSummary, 1500),
+                        e.target.value
+                      );
+                    } catch (error) {
+                      notify(error instanceof Error ? error.message : 'Unable to save overall audit opinion.', 'error');
+                    }
+                  }}
                   className="px-2.5 py-1 border border-slate-300 rounded bg-white font-semibold text-slate-900"
                 >
                   {[...new Set([...reportRatings, ...(eng.reportRating ? [eng.reportRating] : [])])].map((rating) => (
@@ -1851,14 +1919,18 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  onUpdateReport?.(
-                    eng.id,
-                    'Submitted to Lead',
-                    sanitizeMultiline(execSummaryDraft || eng.executiveSummary, 1500),
-                    eng.reportRating ?? reportRatings[0]
-                  );
-                  notify(`${eng.reportRef} saved and submitted to Engagement Lead.`);
+                onClick={async () => {
+                  try {
+                    await onUpdateReport?.(
+                      eng.id,
+                      'Submitted to Lead',
+                      sanitizeMultiline(execSummaryDraft || eng.executiveSummary, 1500),
+                      eng.reportRating ?? reportRatings[0]
+                    );
+                    notify(`${eng.reportRef} saved and submitted to Engagement Lead.`);
+                  } catch (error) {
+                    notify(error instanceof Error ? error.message : 'Unable to submit report to Engagement Lead.', 'error');
+                  }
                 }}
                 className="px-3.5 py-1.5 bg-white hover:bg-slate-50 border border-slate-300 rounded font-semibold text-slate-800 cursor-pointer"
               >
@@ -1866,14 +1938,18 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  onUpdateReport?.(
-                    eng.id,
-                    'Approved by Lead',
-                    sanitizeMultiline(execSummaryDraft || eng.executiveSummary, 1500),
-                    eng.reportRating ?? reportRatings[0]
-                  );
-                  notify(`${eng.reportRef} approved by Engagement Lead (${eng.lead}).`);
+                onClick={async () => {
+                  try {
+                    await onUpdateReport?.(
+                      eng.id,
+                      'Approved by Lead',
+                      sanitizeMultiline(execSummaryDraft || eng.executiveSummary, 1500),
+                      eng.reportRating ?? reportRatings[0]
+                    );
+                    notify(`${eng.reportRef} approved by Engagement Lead (${eng.lead}).`);
+                  } catch (error) {
+                    notify(error instanceof Error ? error.message : 'Unable to approve report as Engagement Lead.', 'error');
+                  }
                 }}
                 className="px-3.5 py-1.5 bg-white hover:bg-slate-50 border border-slate-300 rounded font-semibold text-slate-800 cursor-pointer"
               >
@@ -1881,22 +1957,26 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   if (accessActive && !currentUser.canApproveCAE) {
                     setSecurityBanner(
                       'Segregation of Duties: Only Chief Audit Executive (M. Santos) can grant final CAE report approval.'
                     );
                     return;
                   }
-                  onUpdateReport?.(
-                    eng.id,
-                    'Approved by CAE',
-                    sanitizeMultiline(execSummaryDraft || eng.executiveSummary, 1500),
-                    eng.reportRating ?? reportRatings[0]
-                  );
-                  notify(
-                    `${eng.reportRef} Final Audit Report approved by CAE (${currentUser.name}).`
-                  );
+                  try {
+                    await onUpdateReport?.(
+                      eng.id,
+                      'Approved by CAE',
+                      sanitizeMultiline(execSummaryDraft || eng.executiveSummary, 1500),
+                      eng.reportRating ?? reportRatings[0]
+                    );
+                    notify(
+                      `${eng.reportRef} Final Audit Report approved by CAE (${currentUser.name}).`
+                    );
+                  } catch (error) {
+                    notify(error instanceof Error ? error.message : 'Unable to approve final report.', 'error');
+                  }
                 }}
                 className="px-4 py-1.5 bg-[#542D84] hover:bg-[#412268] text-white rounded font-semibold cursor-pointer"
               >
@@ -2043,10 +2123,12 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  handleReviewAction(selectedNoteModal, 'Returned', reviewComment);
-                  setReviewComment('');
-                  setSelectedNoteModal(null);
+                onClick={async () => {
+                  const ok = await handleReviewAction(selectedNoteModal, 'Returned', reviewComment);
+                  if (ok) {
+                    setReviewComment('');
+                    setSelectedNoteModal(null);
+                  }
                 }}
                 className="px-3.5 py-1.5 border border-amber-300 bg-amber-50 text-amber-900 rounded-md font-semibold cursor-pointer"
               >
@@ -2054,10 +2136,12 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  handleReviewAction(selectedNoteModal, 'Cleared', reviewComment);
-                  setReviewComment('');
-                  setSelectedNoteModal(null);
+                onClick={async () => {
+                  const ok = await handleReviewAction(selectedNoteModal, 'Cleared', reviewComment);
+                  if (ok) {
+                    setReviewComment('');
+                    setSelectedNoteModal(null);
+                  }
                 }}
                 className="px-4 py-1.5 bg-[#542D84] hover:bg-[#412268] text-white rounded-md font-semibold cursor-pointer"
               >
@@ -2421,7 +2505,13 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
                       {act.status !== 'Completed' && (
                         <button
                           type="button"
-                          onClick={() => onCompleteActivity(eng.id, act.id)}
+                          onClick={async () => {
+                            try {
+                              await onCompleteActivity(eng.id, act.id);
+                            } catch (error) {
+                              notify(error instanceof Error ? error.message : 'Unable to mark milestone complete.', 'error');
+                            }
+                          }}
                           className="px-2.5 py-1 bg-[#542D84] text-white rounded text-[11px] font-semibold cursor-pointer"
                         >
                           Complete
@@ -2443,9 +2533,13 @@ export const FieldworkView: React.FC<FieldworkViewProps> = ({
                     <button
                       key={stId}
                       type="button"
-                      onClick={() => {
-                        onAdvanceEngagementStage(stId);
-                        notify(`Engagement advanced to Stage 0${stId}.`);
+                      onClick={async () => {
+                        try {
+                          await onAdvanceEngagementStage(stId);
+                          notify(`Engagement advanced to Stage 0${stId}.`);
+                        } catch (error) {
+                          notify(error instanceof Error ? error.message : 'Unable to advance engagement stage.', 'error');
+                        }
                       }}
                       className={`px-2.5 py-1 rounded text-[11px] font-semibold cursor-pointer ${
                         eng.lifecycleStage === stId

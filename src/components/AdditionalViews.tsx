@@ -444,9 +444,9 @@ export const AuditUniverseView: React.FC<{
   frequencies: { high: number; medium: number; low: number };
   auditDivisionRiskScales: AuditDivisionRiskScale[];
   isReauditMode?: boolean;
-  onAddUniverseEntity?: (entity: UniverseEntity) => void;
-  onUpdateUniverseEntity?: (entity: UniverseEntity) => void;
-  onDeleteUniverseEntity?: (id: string) => void;
+  onAddUniverseEntity?: (entity: UniverseEntity) => Promise<void> | void;
+  onUpdateUniverseEntity?: (entity: UniverseEntity) => Promise<void> | void;
+  onDeleteUniverseEntity?: (id: string) => Promise<void> | void;
   onSyncFromSupabase?: () => Promise<{ synced: number; error?: string }>;
 }> = ({
   universe,
@@ -499,6 +499,7 @@ export const AuditUniverseView: React.FC<{
   const [riskFilter, setRiskFilter] = useState('All risk levels');
   const [showAddModal, setShowAddModal] = useState(false);
   const [universeFormError, setUniverseFormError] = useState<string | null>(null);
+  const [universeError, setUniverseError] = useState<string | null>(null);
 
   // Add entity form
   const [newName, setNewName] = useState('');
@@ -586,7 +587,7 @@ export const AuditUniverseView: React.FC<{
     return matchesSearch && matchesType && matchesCat && matchesRisk;
   });
 
-  const handleAddEntity = (e: React.FormEvent) => {
+  const handleAddEntity = async (e: React.FormEvent) => {
     e.preventDefault();
     if (
       !newName.trim() ||
@@ -609,6 +610,7 @@ export const AuditUniverseView: React.FC<{
       return;
     }
     setUniverseFormError(null);
+    setUniverseError(null);
     const nextSequence = nextIdentifierSequence(
       records.map((record) => ({ id: record.id })),
       'AU'
@@ -641,40 +643,46 @@ export const AuditUniverseView: React.FC<{
       modifiedBy: getCurrentAccountEmail(),
       modifiedAt: new Date().toISOString(),
     };
+    const previousRecords = records;
     setRecords((prev) => [added, ...prev]);
 
-    if (onAddUniverseEntity) {
-      onAddUniverseEntity({
-        id: added.id,
-        code: identifier,
-        name: added.name,
-        division: added.subtitle,
-        category: added.type,
-        auditDivisionId: added.auditDivisionId,
-        likelihood: added.likelihood,
-        impact: added.impact,
-        riskScore: added.riskScore,
-        riskLevel: added.riskLevel,
-        lastAudited: added.lastAudit,
-        nextDue: added.nextDue,
-        cycleMonths: added.cycleMonths,
-        defaultLead: added.owner,
-        riskNotes: added.riskNotes,
-        addedBy: added.addedBy,
-        modifiedBy: added.modifiedBy,
-        modifiedAt: added.modifiedAt,
-      });
-    }
+    try {
+      if (onAddUniverseEntity) {
+        await onAddUniverseEntity({
+          id: added.id,
+          code: identifier,
+          name: added.name,
+          division: added.subtitle,
+          category: added.type,
+          auditDivisionId: added.auditDivisionId,
+          likelihood: added.likelihood,
+          impact: added.impact,
+          riskScore: added.riskScore,
+          riskLevel: added.riskLevel,
+          lastAudited: added.lastAudit,
+          nextDue: added.nextDue,
+          cycleMonths: added.cycleMonths,
+          defaultLead: added.owner,
+          riskNotes: added.riskNotes,
+          addedBy: added.addedBy,
+          modifiedBy: added.modifiedBy,
+          modifiedAt: added.modifiedAt,
+        });
+      }
 
-    setNewName('');
-    setNewRiskNotes('');
-    setScoreOverridden(false);
-    setNewAuditDivisionId('');
-    setNewLastAudit('');
-    setShowAddModal(false);
+      setNewName('');
+      setNewRiskNotes('');
+      setScoreOverridden(false);
+      setNewAuditDivisionId('');
+      setNewLastAudit('');
+      setShowAddModal(false);
+    } catch (error) {
+      setRecords(previousRecords);
+      setUniverseFormError(error instanceof Error ? error.message : 'Unable to save auditable entity to SQL Connect.');
+    }
   };
 
-  const handleSaveEditEntity = (e: React.FormEvent) => {
+  const handleSaveEditEntity = async (e: React.FormEvent) => {
     e.preventDefault();
     if (
       !editingRecord ||
@@ -696,6 +704,7 @@ export const AuditUniverseView: React.FC<{
       return;
     }
     setUniverseFormError(null);
+    setUniverseError(null);
 
     const score = editRiskScore;
     const riskLevel: AuditRiskLevel = calculateRiskLevel(score, editAuditDivisionId);
@@ -726,33 +735,39 @@ export const AuditUniverseView: React.FC<{
       modifiedAt: new Date().toISOString(),
     };
 
+    const previousRecords = records;
     setRecords((prev) => prev.map((r) => (r.id === editingRecord.id ? updated : r)));
 
-    if (onUpdateUniverseEntity) {
-      const currentEntity = universe.find((entity) => entity.id === updated.id);
-      onUpdateUniverseEntity({
-        id: updated.id,
-        code: updated.code || currentEntity?.code || formatIdentifier('AU', 1),
-        name: updated.name,
-        division: updated.subtitle,
-        category: updated.type,
-        auditDivisionId: updated.auditDivisionId,
-        likelihood: updated.likelihood,
-        impact: updated.impact,
-        riskScore: updated.riskScore,
-        riskLevel: updated.riskLevel,
-        lastAudited: updated.lastAudit,
-        nextDue: updated.nextDue,
-        cycleMonths: updated.cycleMonths,
-        defaultLead: updated.owner,
-        riskNotes: updated.riskNotes,
-        addedBy: updated.addedBy,
-        modifiedBy: updated.modifiedBy,
-        modifiedAt: updated.modifiedAt,
-      });
-    }
+    try {
+      if (onUpdateUniverseEntity) {
+        const currentEntity = universe.find((entity) => entity.id === updated.id);
+        await onUpdateUniverseEntity({
+          id: updated.id,
+          code: updated.code || currentEntity?.code || formatIdentifier('AU', 1),
+          name: updated.name,
+          division: updated.subtitle,
+          category: updated.type,
+          auditDivisionId: updated.auditDivisionId,
+          likelihood: updated.likelihood,
+          impact: updated.impact,
+          riskScore: updated.riskScore,
+          riskLevel: updated.riskLevel,
+          lastAudited: updated.lastAudit,
+          nextDue: updated.nextDue,
+          cycleMonths: updated.cycleMonths,
+          defaultLead: updated.owner,
+          riskNotes: updated.riskNotes,
+          addedBy: updated.addedBy,
+          modifiedBy: updated.modifiedBy,
+          modifiedAt: updated.modifiedAt,
+        });
+      }
 
-    setEditingRecord(null);
+      setEditingRecord(null);
+    } catch (error) {
+      setRecords(previousRecords);
+      setUniverseFormError(error instanceof Error ? error.message : 'Unable to update auditable entity in SQL Connect.');
+    }
   };
 
   return (
@@ -808,6 +823,22 @@ export const AuditUniverseView: React.FC<{
           </button>
         </div>
       </div>
+
+      {universeError && (
+        <div
+          role="alert"
+          className="mt-4 rounded-md border border-rose-300 bg-rose-50 px-3.5 py-2.5 text-xs text-rose-900 font-medium flex items-center justify-between gap-3"
+        >
+          <span>{universeError}</span>
+          <button
+            type="button"
+            onClick={() => setUniverseError(null)}
+            className="font-bold cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {supabaseSyncStatus && (
         <div
@@ -975,10 +1006,17 @@ export const AuditUniverseView: React.FC<{
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
+                        onClick={async () => {
+                          setUniverseError(null);
+                          const previousRecords = records;
                           setRecords((prev) => prev.filter((item) => item.id !== rec.id));
-                          if (onDeleteUniverseEntity) {
-                            onDeleteUniverseEntity(rec.id);
+                          try {
+                            if (onDeleteUniverseEntity) {
+                              await onDeleteUniverseEntity(rec.id);
+                            }
+                          } catch (error) {
+                            setRecords(previousRecords);
+                            setUniverseError(error instanceof Error ? error.message : 'Unable to remove auditable entity from SQL Connect.');
                           }
                         }}
                         className="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded text-xs font-medium cursor-pointer"
@@ -1714,9 +1752,9 @@ export const TimelineView: React.FC<{
 export const IssuesView: React.FC<{
   engagements: AuditEngagement[];
   issues: IssueRegisterItem[];
-  onUpdateIssue: (issue: IssueRegisterItem) => void;
+  onUpdateIssue: (issue: IssueRegisterItem) => Promise<void> | void;
   activeLifecycleStage: LifecycleStageId;
-  onValidateAndCloseFinding: (engagementId: string, findingId: string) => void;
+  onValidateAndCloseFinding: (engagementId: string, findingId: string) => Promise<void> | void;
 }> = ({ activeLifecycleStage, engagements, onValidateAndCloseFinding, issues: initialIssues, onUpdateIssue }) => {
   const [issues, setIssues] = useState<IssueRegisterItem[]>(initialIssues);
 
@@ -1731,6 +1769,7 @@ export const IssuesView: React.FC<{
   const [extensionDate, setExtensionDate] = useState('');
   const [extensionReason, setExtensionReason] = useState('');
   const [closureRemarks, setClosureRemarks] = useState('');
+  const [issueError, setIssueError] = useState<string | null>(null);
 
   const openIssues = issues.filter((i) => i.status !== 'Closed');
   const overdueIssues = issues.filter((i) => i.isOverdue && i.status !== 'Closed');
@@ -1746,9 +1785,10 @@ export const IssuesView: React.FC<{
     return true;
   });
 
-  const handleValidateClose = (issue: IssueRegisterItem) => {
+  const handleValidateClose = async (issue: IssueRegisterItem) => {
     const evidence = closureRemarks.trim();
     if (!evidence) return;
+    setIssueError(null);
     const updated: IssueRegisterItem = {
       ...issue,
       status: 'Closed',
@@ -1759,26 +1799,35 @@ export const IssuesView: React.FC<{
       daysStatus: `Closed ${new Date().toLocaleDateString('en-GB')}`,
       evidenceNote: evidence,
     };
+    const previousIssues = issues;
     setIssues((prev) =>
       prev.map((item) => (item.id === issue.id ? updated : item))
     );
-    onUpdateIssue(updated);
-    const engagement = engagements.find(
-      (item) => item.ref === issue.auditRef || item.id === issue.auditRef
-    );
-    const finding = engagement?.findings.find(
-      (item) => item.title.trim().toLowerCase() === issue.title.trim().toLowerCase()
-    );
-    if (engagement && finding) onValidateAndCloseFinding(engagement.id, finding.id);
-    setClosureRemarks('');
-    setExtensionReason('');
-    setSelectedIssue(null);
+    try {
+      await onUpdateIssue(updated);
+      const engagement = engagements.find(
+        (item) => item.ref === issue.auditRef || item.id === issue.auditRef
+      );
+      const finding = engagement?.findings.find(
+        (item) => item.title.trim().toLowerCase() === issue.title.trim().toLowerCase()
+      );
+      if (engagement && finding) {
+        await onValidateAndCloseFinding(engagement.id, finding.id);
+      }
+      setClosureRemarks('');
+      setExtensionReason('');
+      setSelectedIssue(null);
+    } catch (error) {
+      setIssues(previousIssues);
+      setIssueError(error instanceof Error ? error.message : 'Unable to save issue closure to SQL Connect.');
+    }
   };
 
-  const handleGrantExtension = (issue: IssueRegisterItem) => {
+  const handleGrantExtension = async (issue: IssueRegisterItem) => {
     const reason = extensionReason.trim();
     const currentDueDate = toDateInputValue(issue.currentDue);
     if (!extensionDate || !currentDueDate || extensionDate <= currentDueDate || !reason) return;
+    setIssueError(null);
     const updated: IssueRegisterItem = {
       ...issue,
       currentDue: formatDateForDisplay(extensionDate),
@@ -1791,16 +1840,28 @@ export const IssuesView: React.FC<{
       daysStatus: `Extended to ${formatDateForDisplay(extensionDate)}`,
       status: 'In progress',
     };
+    const previousIssues = issues;
     setIssues((prev) =>
       prev.map((item) => (item.id === issue.id ? updated : item))
     );
-    onUpdateIssue(updated);
-    setExtensionReason('');
-    setSelectedIssue(null);
+    try {
+      await onUpdateIssue(updated);
+      setExtensionReason('');
+      setSelectedIssue(null);
+    } catch (error) {
+      setIssues(previousIssues);
+      setIssueError(error instanceof Error ? error.message : 'Unable to save due-date extension to SQL Connect.');
+    }
   };
 
   return (
     <div className="space-y-4">
+      {issueError && (
+        <div role="alert" className="px-4 py-2.5 rounded-md border border-rose-300 bg-rose-50 text-xs text-rose-900 font-medium flex items-center justify-between gap-3">
+          <span>{issueError}</span>
+          <button type="button" onClick={() => setIssueError(null)} className="font-bold cursor-pointer">✕</button>
+        </div>
+      )}
       {/* Top 4 KPI Cards matching Audit-Management-System (5).png */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
         <div className="bg-white rounded-lg border border-slate-200/90 p-5 shadow-2xs">
@@ -2005,6 +2066,7 @@ export const IssuesView: React.FC<{
                     <button
                       type="button"
                       onClick={() => {
+                        setIssueError(null);
                         setSelectedIssue(iss);
                         setExtensionDate(toDateInputValue(iss.currentDue));
                         setExtensionReason('');
@@ -2049,6 +2111,12 @@ export const IssuesView: React.FC<{
                 {selectedIssue.status}
               </span>
             </div>
+
+            {issueError && (
+              <div role="alert" className="px-3 py-2 rounded border border-rose-300 bg-rose-50 text-xs text-rose-900 font-medium">
+                {issueError}
+              </div>
+            )}
 
             <div className="p-3 bg-slate-50 rounded border border-slate-200 space-y-1.5">
               <div>
@@ -2941,13 +3009,13 @@ export const MasterDataSetupAccessView: React.FC<{
   accessActive?: boolean;
   onToggleAccess?: () => void;
   onSelectTab?: (tab: MainTabId) => void;
-  onAddUserProfile?: (user: UserProfile) => void;
-  onUpdateUserProfile?: (user: UserProfile) => void;
-  onDeleteUserProfile?: (id: string) => void;
+  onAddUserProfile?: (user: UserProfile) => Promise<void> | void;
+  onUpdateUserProfile?: (user: UserProfile) => Promise<void> | void;
+  onDeleteUserProfile?: (id: string) => Promise<void> | void;
   onResetSystemForUAT?: () => Promise<void> | void;
   onRolePermissionMatrixChange?: (rows: MatrixRow[]) => void;
   universe?: UniverseEntity[];
-  onUpdateUniverseEntity?: (entity: UniverseEntity) => void;
+  onUpdateUniverseEntity?: (entity: UniverseEntity) => Promise<void> | void;
 }> = ({
   tab,
   currentUser,
@@ -3063,7 +3131,11 @@ export const MasterDataSetupAccessView: React.FC<{
               },
             ];
         setRoleDefinitions(migratedRoles);
-        if (migratedRoles !== roles) saveMasterData('app_roles', migratedRoles);
+        if (migratedRoles !== roles && isSystemAdmin) {
+          saveMasterData('app_roles', migratedRoles).catch((err) => {
+            console.warn('Role migration sync skipped:', err);
+          });
+        }
       }
     });
     fetchMasterData('entity_types', DEFAULT_ENTITY_TYPES).then(setEntityTypes);
@@ -3097,6 +3169,7 @@ export const MasterDataSetupAccessView: React.FC<{
     if (!accessRegistryLoaded) return;
     if (!userProfiles || userProfiles.length === 0) return;
 
+    let mergedToPersist: any[] | null = null;
     setAccessUsers((prev) => {
       const dbUsers = userProfiles.map((p) => {
         const existing = prev.find(
@@ -3180,11 +3253,20 @@ export const MasterDataSetupAccessView: React.FC<{
       });
 
       if (!hasSavedRegistry) {
-        saveMasterData('access_users_registry', merged);
+        mergedToPersist = merged;
       }
       return merged as any;
     });
-  }, [userProfiles, roleDefinitions, accessRegistryLoaded, hasSavedRegistry]);
+    if (mergedToPersist && isSystemAdmin) {
+      setTimeout(() => {
+        if (mergedToPersist) {
+          saveMasterData('access_users_registry', mergedToPersist).catch((err) => {
+            console.warn('Registry seed persistence skipped:', err);
+          });
+        }
+      }, 0);
+    }
+  }, [userProfiles, roleDefinitions, accessRegistryLoaded, hasSavedRegistry, isSystemAdmin]);
 
   // ── Access tab local security state ────────────────────────────────────────
   const [accessNotice, setAccessNotice] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
@@ -3215,43 +3297,50 @@ export const MasterDataSetupAccessView: React.FC<{
     if (!mail) return;
     const accessRole = normalizeRole(params.roleName);
     const isSysAdmin = accessRole === 'System administrator';
-    try {
-      const res = await createOrSyncSystemUser({
-        username: mail.split('@')[0],
-        fullName: params.fullName,
-        email: mail,
-        role: isSysAdmin ? 'admin' : 'user',
-        appRole: params.roleName,
-        scope: params.scope || 'Assigned engagements',
-        employeeNumber: params.employeeNumber,
-        isActive: params.isActive,
-        isLocked: Boolean(params.isLocked),
-      });
-      if (res.success) {
-        await syncWorkspaceMembershipForEmail(mail, params.isActive && !params.isLocked);
-      } else if (res.error) {
-        notifyAccess('error', res.error);
-      }
-    } catch (err) {
-      notifyAccess('error', err instanceof Error ? err.message : 'Failed to synchronize user permissions.');
+    const res = await createOrSyncSystemUser({
+      username: mail.split('@')[0],
+      fullName: params.fullName,
+      email: mail,
+      role: isSysAdmin ? 'admin' : 'user',
+      appRole: params.roleName,
+      scope: params.scope || 'Assigned engagements',
+      employeeNumber: params.employeeNumber,
+      isActive: params.isActive,
+      isLocked: Boolean(params.isLocked),
+    });
+    if (!res.success) {
+      throw new Error(res.error || 'Failed to synchronize system user permissions.');
     }
+    await syncWorkspaceMembershipForEmail(mail, params.isActive && !params.isLocked);
   };
 
   // ── Handlers: Entity Types ─────────────────────────────────────────────────
-  const handleAddEntityType = () => {
+  const handleAddEntityType = async () => {
     if (!newEntityType.trim()) return;
     const trimmed = newEntityType.trim();
     if (entityTypes.includes(trimmed)) return;
+    const prev = entityTypes;
     const updated = [...entityTypes, trimmed];
     setEntityTypes(updated);
-    saveMasterData('entity_types', updated);
-    setNewEntityType('');
+    try {
+      await saveMasterData('entity_types', updated);
+      setNewEntityType('');
+    } catch (error) {
+      setEntityTypes(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to save entity types.');
+    }
   };
 
-  const handleRemoveEntityType = (et: string) => {
+  const handleRemoveEntityType = async (et: string) => {
+    const prev = entityTypes;
     const updated = entityTypes.filter((item) => item !== et);
     setEntityTypes(updated);
-    saveMasterData('entity_types', updated);
+    try {
+      await saveMasterData('entity_types', updated);
+    } catch (error) {
+      setEntityTypes(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to remove entity type.');
+    }
   };
 
   const handleStartEditEntityType = (et: string) => {
@@ -3259,41 +3348,63 @@ export const MasterDataSetupAccessView: React.FC<{
     setEditingEntityValue(et);
   };
 
-  const handleSaveEditEntityType = (oldVal: string) => {
+  const handleSaveEditEntityType = async (oldVal: string) => {
     const trimmed = editingEntityValue.trim();
     if (!trimmed || trimmed === oldVal) {
       setEditingEntityType(null);
       return;
     }
+    const prev = entityTypes;
     const updated = entityTypes.map((item) => (item === oldVal ? trimmed : item));
     setEntityTypes(updated);
-    saveMasterData('entity_types', updated);
-    universe
-      .filter((entity) => entity.category === oldVal)
-      .forEach((entity) => onUpdateUniverseEntity?.({
-        ...entity,
-        category: trimmed,
-        modifiedBy: getCurrentAccountEmail(),
-        modifiedAt: new Date().toISOString(),
-      }));
-    setEditingEntityType(null);
+    try {
+      await saveMasterData('entity_types', updated);
+      await Promise.all(
+        universe
+          .filter((entity) => entity.category === oldVal)
+          .map((entity) =>
+            onUpdateUniverseEntity?.({
+              ...entity,
+              category: trimmed,
+              modifiedBy: getCurrentAccountEmail(),
+              modifiedAt: new Date().toISOString(),
+            })
+          )
+      );
+      setEditingEntityType(null);
+    } catch (error) {
+      setEntityTypes(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to save updated entity type.');
+    }
   };
 
   // ── Handlers: Audit Categories ─────────────────────────────────────────────
-  const handleAddAuditCategory = () => {
+  const handleAddAuditCategory = async () => {
     if (!newAuditCategory.trim()) return;
     const trimmed = newAuditCategory.trim();
     if (auditCategories.includes(trimmed)) return;
+    const prev = auditCategories;
     const updated = [...auditCategories, trimmed];
     setAuditCategories(updated);
-    saveMasterData('audit_categories', updated);
-    setNewAuditCategory('');
+    try {
+      await saveMasterData('audit_categories', updated);
+      setNewAuditCategory('');
+    } catch (error) {
+      setAuditCategories(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to save audit category.');
+    }
   };
 
-  const handleRemoveAuditCategory = (cat: string) => {
+  const handleRemoveAuditCategory = async (cat: string) => {
+    const prev = auditCategories;
     const updated = auditCategories.filter((item) => item !== cat);
     setAuditCategories(updated);
-    saveMasterData('audit_categories', updated);
+    try {
+      await saveMasterData('audit_categories', updated);
+    } catch (error) {
+      setAuditCategories(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to remove audit category.');
+    }
   };
 
   const handleStartEditCategory = (cat: string) => {
@@ -3301,24 +3412,34 @@ export const MasterDataSetupAccessView: React.FC<{
     setEditingCategoryValue(cat);
   };
 
-  const handleSaveEditCategory = (oldVal: string) => {
+  const handleSaveEditCategory = async (oldVal: string) => {
     const trimmed = editingCategoryValue.trim();
     if (!trimmed || trimmed === oldVal) {
       setEditingCategory(null);
       return;
     }
+    const prev = auditCategories;
     const updated = auditCategories.map((item) => (item === oldVal ? trimmed : item));
     setAuditCategories(updated);
-    saveMasterData('audit_categories', updated);
-    universe
-      .filter((entity) => entity.division === oldVal)
-      .forEach((entity) => onUpdateUniverseEntity?.({
-        ...entity,
-        division: trimmed,
-        modifiedBy: getCurrentAccountEmail(),
-        modifiedAt: new Date().toISOString(),
-      }));
-    setEditingCategory(null);
+    try {
+      await saveMasterData('audit_categories', updated);
+      await Promise.all(
+        universe
+          .filter((entity) => entity.division === oldVal)
+          .map((entity) =>
+            onUpdateUniverseEntity?.({
+              ...entity,
+              division: trimmed,
+              modifiedBy: getCurrentAccountEmail(),
+              modifiedAt: new Date().toISOString(),
+            })
+          )
+      );
+      setEditingCategory(null);
+    } catch (error) {
+      setAuditCategories(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to save updated audit category.');
+    }
   };
 
   // ── Handlers: Edit Access Modal ────────────────────────────────────────────
@@ -3360,66 +3481,77 @@ export const MasterDataSetupAccessView: React.FC<{
     const updatedEmpNo = editFormEmpNo.trim() || editingAccessUser.employeeNumber;
     const isActive = editFormStatus === 'Active';
 
-    setHasSavedRegistry(true);
-    setAccessUsers((prev) => {
-      const updated = prev.map((item) => {
-        if (item.id !== targetId) return item;
-        return {
-          ...item,
-          name: updatedName,
-          email: updatedEmail,
-          roles: [editFormRole],
-          title: `${editFormRole} · Internal Audit`,
-          scope: updatedScope,
-          status: editFormStatus,
-          employeeNumber: updatedEmpNo,
-          mfaEnabled: editFormMfa,
-          isPrivileged: editFormPrivileged || accessRole === 'System administrator',
-          lastModified: new Date().toISOString().slice(0, 10),
-        } as any;
-      });
-      saveMasterData('access_users_registry', updated);
-      return updated;
-    });
-
-    if (onUpdateUserProfile) {
-      onUpdateUserProfile({
-        id: targetId,
+    const previousUsers = accessUsers;
+    const previousHadSaved = hasSavedRegistry;
+    const updatedUsers = accessUsers.map((item) => {
+      if (item.id !== targetId) return item;
+      return {
+        ...item,
         name: updatedName,
         email: updatedEmail,
-        roleTitle: `${editFormRole} (Internal Audit)`,
-        fullLabel: `${updatedName} – ${editFormRole}`,
-        headerSubtitle: editFormRole,
-        department: 'Internal Audit',
-        canApproveHead,
-        canApproveIndependent,
-        canApproveCAE,
-        accountStatus: isActive ? 'Active' : 'Inactive',
+        roles: [editFormRole],
+        title: `${editFormRole} · Internal Audit`,
+        scope: updatedScope,
+        status: editFormStatus,
         employeeNumber: updatedEmpNo,
-        isLocked: Boolean(editingAccessUser.isLocked),
-        requiresPasswordChange: false,
         mfaEnabled: editFormMfa,
         isPrivileged: editFormPrivileged || accessRole === 'System administrator',
-      });
-    }
-
-    if (previousEmail && previousEmail !== updatedEmail) {
-      await adminDeleteSystemUserByEmail(previousEmail);
-      await syncWorkspaceMembershipForEmail(previousEmail, false);
-    }
-
-    await syncUserAuthAndWorkspace({
-      fullName: updatedName,
-      email: updatedEmail,
-      roleName: editFormRole,
-      scope: updatedScope,
-      employeeNumber: updatedEmpNo,
-      isActive,
-      isLocked: Boolean(editingAccessUser.isLocked),
+        lastModified: new Date().toISOString().slice(0, 10),
+      } as any;
     });
 
-    notifyAccess('success', `Access rights and Google sign-in permissions updated for "${updatedName}".`);
-    setEditingAccessUser(null);
+    setHasSavedRegistry(true);
+    setAccessUsers(updatedUsers);
+
+    try {
+      await saveMasterData('access_users_registry', updatedUsers);
+
+      if (onUpdateUserProfile) {
+        await onUpdateUserProfile({
+          id: targetId,
+          name: updatedName,
+          email: updatedEmail,
+          roleTitle: `${editFormRole} (Internal Audit)`,
+          fullLabel: `${updatedName} – ${editFormRole}`,
+          headerSubtitle: editFormRole,
+          department: 'Internal Audit',
+          canApproveHead,
+          canApproveIndependent,
+          canApproveCAE,
+          accountStatus: isActive ? 'Active' : 'Inactive',
+          employeeNumber: updatedEmpNo,
+          isLocked: Boolean(editingAccessUser.isLocked),
+          requiresPasswordChange: false,
+          mfaEnabled: editFormMfa,
+          isPrivileged: editFormPrivileged || accessRole === 'System administrator',
+        });
+      }
+
+      if (previousEmail && previousEmail !== updatedEmail) {
+        const delRes = await adminDeleteSystemUserByEmail(previousEmail);
+        if (!delRes.success) {
+          throw new Error(delRes.error || 'Unable to remove previous email sign-in mapping.');
+        }
+        await syncWorkspaceMembershipForEmail(previousEmail, false);
+      }
+
+      await syncUserAuthAndWorkspace({
+        fullName: updatedName,
+        email: updatedEmail,
+        roleName: editFormRole,
+        scope: updatedScope,
+        employeeNumber: updatedEmpNo,
+        isActive,
+        isLocked: Boolean(editingAccessUser.isLocked),
+      });
+
+      notifyAccess('success', `Access rights and Google sign-in permissions updated for "${updatedName}".`);
+      setEditingAccessUser(null);
+    } catch (error) {
+      setAccessUsers(previousUsers);
+      setHasSavedRegistry(previousHadSaved);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to save access rights to SQL Connect.');
+    }
   };
 
   // ── Handlers: Role Permissions Matrix ──────────────────────────────────────
@@ -3447,12 +3579,16 @@ export const MasterDataSetupAccessView: React.FC<{
     }));
   };
 
-  const handleSaveMatrix = () => {
-    saveMasterData('role_permissions_matrix', matrixRows);
-    onRolePermissionMatrixChange?.(matrixRows);
-    setIsEditingMatrix(false);
-    setMatrixRowsBeforeEdit(null);
-    notifyAccess('success', 'Role permission matrix successfully saved and updated in system configuration.');
+  const handleSaveMatrix = async () => {
+    try {
+      await saveMasterData('role_permissions_matrix', matrixRows);
+      onRolePermissionMatrixChange?.(matrixRows);
+      setIsEditingMatrix(false);
+      setMatrixRowsBeforeEdit(null);
+      notifyAccess('success', 'Role permission matrix successfully saved and updated in system configuration.');
+    } catch (error) {
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to save role permission matrix.');
+    }
   };
 
   const handleCancelMatrixEdit = () => {
@@ -3461,47 +3597,71 @@ export const MasterDataSetupAccessView: React.FC<{
     setIsEditingMatrix(false);
   };
 
-  const handleAddRole = () => {
+  const handleAddRole = async () => {
     const name = newRoleName.trim();
     if (!name || roleDefinitions.some((role) => role.name.toLowerCase() === name.toLowerCase())) {
       notifyAccess('error', 'Enter a unique role name before adding it.');
       return;
     }
+    const prev = roleDefinitions;
     const updated = [...roleDefinitions, { name, accessRole: newRoleAccess }];
     setRoleDefinitions(updated);
-    saveMasterData('app_roles', updated);
-    setNewRoleName('');
-    notifyAccess('success', `Role "${name}" added with ${newRoleAccess} access.`);
+    try {
+      await saveMasterData('app_roles', updated);
+      setNewRoleName('');
+      notifyAccess('success', `Role "${name}" added with ${newRoleAccess} access.`);
+    } catch (error) {
+      setRoleDefinitions(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to save new role definition.');
+    }
   };
 
-  const handleRemoveRole = (role: AppRoleDefinition) => {
+  const handleRemoveRole = async (role: AppRoleDefinition) => {
     if (role.builtIn) return;
     if (accessUsers.some((user) => user.roles.includes(role.name))) {
       notifyAccess('error', `Reassign users from "${role.name}" before removing this role.`);
       return;
     }
+    const prev = roleDefinitions;
     const updated = roleDefinitions.filter((item) => item.name !== role.name);
     setRoleDefinitions(updated);
-    saveMasterData('app_roles', updated);
-    notifyAccess('success', `Role "${role.name}" removed.`);
+    try {
+      await saveMasterData('app_roles', updated);
+      notifyAccess('success', `Role "${role.name}" removed.`);
+    } catch (error) {
+      setRoleDefinitions(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to remove role definition.');
+    }
   };
 
-  const handleUpdateRoleAccess = (roleName: string, accessRole: AppRole) => {
+  const handleUpdateRoleAccess = async (roleName: string, accessRole: AppRole) => {
+    const prev = roleDefinitions;
     const updated = roleDefinitions.map((role) =>
       role.name === roleName ? { ...role, accessRole } : role
     );
     setRoleDefinitions(updated);
-    saveMasterData('app_roles', updated);
-    notifyAccess('success', `Access template for "${roleName}" updated to ${accessRole}.`);
+    try {
+      await saveMasterData('app_roles', updated);
+      notifyAccess('success', `Access template for "${roleName}" updated to ${accessRole}.`);
+    } catch (error) {
+      setRoleDefinitions(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to update role access template.');
+    }
   };
 
-  const handleResetMatrix = () => {
+  const handleResetMatrix = async () => {
+    const prev = matrixRows;
     setMatrixRows(DEFAULT_ROLE_PERMISSIONS_MATRIX);
-    saveMasterData('role_permissions_matrix', DEFAULT_ROLE_PERMISSIONS_MATRIX);
-    onRolePermissionMatrixChange?.(DEFAULT_ROLE_PERMISSIONS_MATRIX);
-    setIsEditingMatrix(false);
-    setMatrixRowsBeforeEdit(null);
-    notifyAccess('success', 'Role permission matrix reset to baseline standards.');
+    try {
+      await saveMasterData('role_permissions_matrix', DEFAULT_ROLE_PERMISSIONS_MATRIX);
+      onRolePermissionMatrixChange?.(DEFAULT_ROLE_PERMISSIONS_MATRIX);
+      setIsEditingMatrix(false);
+      setMatrixRowsBeforeEdit(null);
+      notifyAccess('success', 'Role permission matrix reset to baseline standards.');
+    } catch (error) {
+      setMatrixRows(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to reset role permission matrix.');
+    }
   };
 
   const handleAddMatrixRow = () => {
@@ -3553,7 +3713,7 @@ export const MasterDataSetupAccessView: React.FC<{
     setShowAuditorModal(true);
   };
 
-  const handleSaveAuditor = (e: React.FormEvent) => {
+  const handleSaveAuditor = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!auditorFormName.trim() || !auditorFormEmail.trim()) return;
     const item: AuditorRecord = {
@@ -3563,21 +3723,30 @@ export const MasterDataSetupAccessView: React.FC<{
       skills: auditorFormSkills.trim() || 'General Audit',
     };
 
-    let updated: AuditorRecord[];
-    if (editingAuditorEmail) {
-      updated = auditorsList.map((a) => (a.email === editingAuditorEmail ? item : a));
-    } else {
-      updated = [...auditorsList, item];
-    }
+    const prev = auditorsList;
+    const updated = editingAuditorEmail
+      ? auditorsList.map((a) => (a.email === editingAuditorEmail ? item : a))
+      : [...auditorsList, item];
     setAuditorsList(updated);
-    saveMasterData('auditors', updated);
-    setShowAuditorModal(false);
+    try {
+      await saveMasterData('auditors', updated);
+      setShowAuditorModal(false);
+    } catch (error) {
+      setAuditorsList(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to save auditor record.');
+    }
   };
 
-  const handleRemoveAuditor = (email: string) => {
+  const handleRemoveAuditor = async (email: string) => {
+    const prev = auditorsList;
     const updated = auditorsList.filter((a) => a.email !== email);
     setAuditorsList(updated);
-    saveMasterData('auditors', updated);
+    try {
+      await saveMasterData('auditors', updated);
+    } catch (error) {
+      setAuditorsList(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to remove auditor record.');
+    }
   };
 
   // ── Handlers: Auditee Directory ────────────────────────────────────────────
@@ -3605,7 +3774,7 @@ export const MasterDataSetupAccessView: React.FC<{
     setShowAuditeeModal(true);
   };
 
-  const handleSaveAuditee = (e: React.FormEvent) => {
+  const handleSaveAuditee = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!auditeeFormUnit.trim() || !auditeeFormHead.trim()) return;
     const existing =
@@ -3613,7 +3782,13 @@ export const MasterDataSetupAccessView: React.FC<{
     const item: AuditeeUnitRecord = {
       id:
         existing?.id ||
-        formatIdentifier('AD', auditeeDirectory.length + 1).toLowerCase(),
+        formatIdentifier(
+          'AD',
+          nextIdentifierSequence(
+            auditeeDirectory.map((d) => ({ id: d.id || '' })),
+            'AD'
+          )
+        ).toLowerCase(),
       unit: auditeeFormUnit.trim(),
       head: auditeeFormHead.trim(),
       title: auditeeFormTitle.trim() || 'Unit Head',
@@ -3622,16 +3797,13 @@ export const MasterDataSetupAccessView: React.FC<{
       isActive: auditeeFormIsActive,
     };
 
-    let updated: AuditeeUnitRecord[];
-    if (editingAuditeeIndex !== null) {
-      updated = auditeeDirectory.map((d, idx) =>
-        idx === editingAuditeeIndex ? item : d
-      );
-    } else {
-      updated = [...auditeeDirectory, item];
-    }
+    const prevDir = auditeeDirectory;
+    const prevLists = configurableLists;
+    const updated =
+      editingAuditeeIndex !== null
+        ? auditeeDirectory.map((d, idx) => (idx === editingAuditeeIndex ? item : d))
+        : [...auditeeDirectory, item];
     setAuditeeDirectory(updated);
-    saveMasterData('auditee_directory', updated);
     let departments = configurableLists.departments;
     if (editingAuditeeUnit && editingAuditeeUnit !== item.unit) {
       departments = departments.filter((department) =>
@@ -3644,84 +3816,133 @@ export const MasterDataSetupAccessView: React.FC<{
     }
     if (departments !== configurableLists.departments) {
       setConfigurableLists((prev) => ({ ...prev, departments }));
-      saveMasterData('departments', departments);
     }
-    setEditingAuditeeIndex(null);
-    setEditingAuditeeUnit(null);
-    setShowAuditeeModal(false);
+    try {
+      await saveMasterData('auditee_directory', updated);
+      if (departments !== prevLists.departments) {
+        await saveMasterData('departments', departments);
+      }
+      setEditingAuditeeIndex(null);
+      setEditingAuditeeUnit(null);
+      setShowAuditeeModal(false);
+    } catch (error) {
+      setAuditeeDirectory(prevDir);
+      setConfigurableLists(prevLists);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to save auditee directory.');
+    }
   };
 
-  const handleRemoveAuditee = (idx: number) => {
+  const handleRemoveAuditee = async (idx: number) => {
+    const prev = auditeeDirectory;
     const updated = auditeeDirectory.filter((_, i) => i !== idx);
     setAuditeeDirectory(updated);
-    saveMasterData('auditee_directory', updated);
+    try {
+      await saveMasterData('auditee_directory', updated);
+    } catch (error) {
+      setAuditeeDirectory(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to remove auditee unit.');
+    }
   };
 
-  const handleToggleAuditeeStatus = (idx: number) => {
+  const handleToggleAuditeeStatus = async (idx: number) => {
+    const prev = auditeeDirectory;
     const updated = auditeeDirectory.map((dir, i) =>
       i === idx ? { ...dir, isActive: !(dir.isActive ?? true) } : dir
     );
     setAuditeeDirectory(updated);
-    saveMasterData('auditee_directory', updated);
+    try {
+      await saveMasterData('auditee_directory', updated);
+    } catch (error) {
+      setAuditeeDirectory(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to update auditee unit status.');
+    }
   };
 
-  const handleAddLookupValue = (key: ConfigurableListKey) => {
+  const handleAddLookupValue = async (key: ConfigurableListKey) => {
     const value = newLookupValues[key].trim();
     if (!value || configurableLists[key].some((item) => item.toLowerCase() === value.toLowerCase())) return;
+    const prev = configurableLists;
     const updated = [...configurableLists[key], value];
-    setConfigurableLists((prev) => ({ ...prev, [key]: updated }));
-    saveMasterData(key, updated);
-    setNewLookupValues((prev) => ({ ...prev, [key]: '' }));
+    setConfigurableLists((prevState) => ({ ...prevState, [key]: updated }));
+    try {
+      await saveMasterData(key, updated);
+      setNewLookupValues((prevState) => ({ ...prevState, [key]: '' }));
+    } catch (error) {
+      setConfigurableLists(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to save master data lookup value.');
+    }
   };
 
-  const handleRemoveLookupValue = (key: ConfigurableListKey, value: string) => {
+  const handleRemoveLookupValue = async (key: ConfigurableListKey, value: string) => {
+    const prev = configurableLists;
     const updated = configurableLists[key].filter((item) => item !== value);
-    setConfigurableLists((prev) => ({ ...prev, [key]: updated }));
-    saveMasterData(key, updated);
+    setConfigurableLists((prevState) => ({ ...prevState, [key]: updated }));
+    try {
+      await saveMasterData(key, updated);
+    } catch (error) {
+      setConfigurableLists(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to remove master data lookup value.');
+    }
   };
 
   // ── Handlers: Setup Checklist ──────────────────────────────────────────────
-  const handleCycleStatus = (id: string) => {
-    setSetupItems((prev) => {
-      const updated = prev.map((item) => {
-        if (item.id !== id) return item;
-        const nextStatus: 'Done' | 'In progress' | 'To do' =
-          item.status === 'Done'
-            ? 'To do'
-            : item.status === 'To do'
-            ? 'In progress'
-            : 'Done';
-        return { ...item, status: nextStatus };
-      });
-      saveMasterData('setup_checklist', updated);
-      return updated;
+  const handleCycleStatus = async (id: string) => {
+    const prev = setupItems;
+    const updated = setupItems.map((item) => {
+      if (item.id !== id) return item;
+      const nextStatus: 'Done' | 'In progress' | 'To do' =
+        item.status === 'Done'
+          ? 'To do'
+          : item.status === 'To do'
+          ? 'In progress'
+          : 'Done';
+      return { ...item, status: nextStatus };
     });
+    setSetupItems(updated);
+    try {
+      await saveMasterData('setup_checklist', updated);
+    } catch (error) {
+      setSetupItems(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to save setup checklist.');
+    }
   };
 
-  const handleMarkAllDone = () => {
-    setSetupItems((prev) => {
-      const updated = prev.map((item) => ({ ...item, status: 'Done' as const }));
-      saveMasterData('setup_checklist', updated);
-      return updated;
-    });
+  const handleMarkAllDone = async () => {
+    const prev = setupItems;
+    const updated = setupItems.map((item) => ({ ...item, status: 'Done' as const }));
+    setSetupItems(updated);
+    try {
+      await saveMasterData('setup_checklist', updated);
+    } catch (error) {
+      setSetupItems(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to save setup checklist.');
+    }
   };
 
-  const handleResetChecklist = () => {
-    setSetupItems((prev) => {
-      const updated = prev.map((item) => ({ ...item, status: 'To do' as const }));
-      saveMasterData('setup_checklist', updated);
-      return updated;
-    });
+  const handleResetChecklist = async () => {
+    const prev = setupItems;
+    const updated = setupItems.map((item) => ({ ...item, status: 'To do' as const }));
+    setSetupItems(updated);
+    try {
+      await saveMasterData('setup_checklist', updated);
+    } catch (error) {
+      setSetupItems(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to reset setup checklist.');
+    }
   };
 
-  const handleSaveNote = (id: string) => {
-    setSetupItems((prev) => {
-      const updated = prev.map((item) => (item.id === id ? { ...item, note: draftNote.trim() } : item));
-      saveMasterData('setup_checklist', updated);
-      return updated;
-    });
-    setEditingNoteId(null);
-    setDraftNote('');
+  const handleSaveNote = async (id: string) => {
+    const prev = setupItems;
+    const updated = setupItems.map((item) => (item.id === id ? { ...item, note: draftNote.trim() } : item));
+    setSetupItems(updated);
+    try {
+      await saveMasterData('setup_checklist', updated);
+      setEditingNoteId(null);
+      setDraftNote('');
+    } catch (error) {
+      setSetupItems(prev);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to save setup note.');
+    }
   };
 
   // ── Derived counts for Access Tab ──────────────────────────────────────────
@@ -3782,24 +4003,33 @@ export const MasterDataSetupAccessView: React.FC<{
   const handleAdminUnlock = async (userId: string, userName: string, email?: string) => {
     const reset = unlockAccount();
     let targetStatus = 'Active';
-    setHasSavedRegistry(true);
-    setAccessUsers((prev) => {
-      const updated = prev.map((u) => {
-        if (u.id !== userId) return u;
-        targetStatus = u.status || 'Active';
-        return { ...u, ...reset } as any;
-      });
-      saveMasterData('access_users_registry', updated);
-      return updated;
+    const prevUsers = accessUsers;
+    const prevHadSaved = hasSavedRegistry;
+    const updatedUsers = accessUsers.map((u) => {
+      if (u.id !== userId) return u;
+      targetStatus = u.status || 'Active';
+      return { ...u, ...reset } as any;
     });
-    const session = loadSession();
-    if (session) {
-      await adminUnlockUser(session, userId, email);
+    setHasSavedRegistry(true);
+    setAccessUsers(updatedUsers);
+    try {
+      await saveMasterData('access_users_registry', updatedUsers);
+      const session = loadSession();
+      if (session) {
+        const unlockRes = await adminUnlockUser(session, userId, email);
+        if (!unlockRes.success) {
+          throw new Error(unlockRes.error || 'Unable to unlock account in SQL Connect.');
+        }
+      }
+      if (email && targetStatus === 'Active') {
+        await syncWorkspaceMembershipForEmail(email, true);
+      }
+      notifyAccess('success', `IA-9: Account "${userName}" has been unlocked by the administrator.`);
+    } catch (error) {
+      setAccessUsers(prevUsers);
+      setHasSavedRegistry(prevHadSaved);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to unlock user account.');
     }
-    if (email && targetStatus === 'Active') {
-      await syncWorkspaceMembershipForEmail(email, true);
-    }
-    notifyAccess('success', `IA-9: Account "${userName}" has been unlocked by the administrator.`);
   };
 
   const handleAddUser = async () => {
@@ -3829,8 +4059,9 @@ export const MasterDataSetupAccessView: React.FC<{
     const newUserAccessRole = normalizeRole(newUserRole);
     const scopeValue = newUserScope.trim() || 'Assigned engagements';
     const empNumber = newUserEmployeeNo.trim() || `EMP-${Date.now().toString().slice(-4)}`;
+    const nextUserSeq = nextIdentifierSequence(accessUsers, 'IA');
     const newAcc = {
-      id: formatIdentifier('IA', accessUsers.length + 1).toLowerCase(),
+      id: formatIdentifier('IA', nextUserSeq).toLowerCase(),
       name: trimmedName,
       title: `${newUserRole} · Internal Audit`,
       email: normalizedEmail,
@@ -3848,59 +4079,68 @@ export const MasterDataSetupAccessView: React.FC<{
       mfaEnabled: false,
       isPrivileged: newUserAccessRole === 'System administrator',
     };
+    const prevUsers = accessUsers;
+    const prevHadSaved = hasSavedRegistry;
+    const updatedUsers = [...accessUsers, newAcc as any];
     setHasSavedRegistry(true);
-    setAccessUsers((prev) => {
-      const updated = [...prev, newAcc as any];
-      saveMasterData('access_users_registry', updated);
-      return updated;
-    });
+    setAccessUsers(updatedUsers);
     const canApproveHead = newUserAccessRole === 'Chief Audit Executive' || newUserAccessRole === 'System administrator';
     const canApproveIndependent = ['Audit Division Head', 'Audit Supervisor', 'Independent Reviewer'].includes(newUserAccessRole);
     const canApproveCAE = newUserAccessRole === 'Chief Audit Executive';
 
-    if (onAddUserProfile) {
-      onAddUserProfile({
-        id: newAcc.id,
-        name: newAcc.name,
+    try {
+      await saveMasterData('access_users_registry', updatedUsers);
+
+      if (onAddUserProfile) {
+        await onAddUserProfile({
+          id: newAcc.id,
+          name: newAcc.name,
+          email: newAcc.email,
+          roleTitle: `${newUserRole} (Internal Audit)`,
+          fullLabel: `${newAcc.name} – ${newUserRole}`,
+          headerSubtitle: newUserRole,
+          department: 'Internal Audit',
+          canApproveHead,
+          canApproveIndependent,
+          canApproveCAE,
+          employeeNumber: newAcc.employeeNumber,
+          accountStatus: 'Active',
+          failedLoginCount: 0,
+          isLocked: false,
+          requiresPasswordChange: false,
+          mfaEnabled: false,
+          isPrivileged: newUserAccessRole === 'System administrator',
+        });
+      }
+
+      await syncUserAuthAndWorkspace({
+        fullName: newAcc.name,
         email: newAcc.email,
-        roleTitle: `${newUserRole} (Internal Audit)`,
-        fullLabel: `${newAcc.name} – ${newUserRole}`,
-        headerSubtitle: newUserRole,
-        department: 'Internal Audit',
-        canApproveHead,
-        canApproveIndependent,
-        canApproveCAE,
-        employeeNumber: newAcc.employeeNumber,
-        accountStatus: 'Active',
-        failedLoginCount: 0,
+        roleName: newUserRole,
+        scope: scopeValue,
+        employeeNumber: empNumber,
+        isActive: true,
         isLocked: false,
-        requiresPasswordChange: false,
-        mfaEnabled: false,
-        isPrivileged: newUserAccessRole === 'System administrator',
       });
+
+      notifyAccess(
+        'success',
+        `User "${trimmedName}" (${normalizedEmail}) added with role "${newUserRole}". They can now sign in with Google.`
+      );
+      setNewUserName('');
+      setNewUserEmail('');
+      setNewUserEmployeeNo('');
+      setNewUserRole('Assisting Auditor');
+      setNewUserScope('');
+      setNewUserFormError('');
+      setShowAddUserForm(false);
+    } catch (error) {
+      setAccessUsers(prevUsers);
+      setHasSavedRegistry(prevHadSaved);
+      const msg = error instanceof Error ? error.message : 'Unable to save user account to SQL Connect.';
+      setNewUserFormError(msg);
+      notifyAccess('error', msg);
     }
-
-    await syncUserAuthAndWorkspace({
-      fullName: newAcc.name,
-      email: newAcc.email,
-      roleName: newUserRole,
-      scope: scopeValue,
-      employeeNumber: empNumber,
-      isActive: true,
-      isLocked: false,
-    });
-
-    notifyAccess(
-      'success',
-      `User "${trimmedName}" (${normalizedEmail}) added with role "${newUserRole}". They can now sign in with Google.`
-    );
-    setNewUserName('');
-    setNewUserEmail('');
-    setNewUserEmployeeNo('');
-    setNewUserRole('Assisting Auditor');
-    setNewUserScope('');
-    setNewUserFormError('');
-    setShowAddUserForm(false);
   };
 
   const handleUpdateUserRole = async (userId: string, newRole: string) => {
@@ -3909,6 +4149,8 @@ export const MasterDataSetupAccessView: React.FC<{
 
     const accessRole = normalizeRole(newRole);
     const isPrivileged = accessRole === 'System administrator' || accessRole === 'Chief Audit Executive';
+    const prevUsers = accessUsers;
+    const prevHadSaved = hasSavedRegistry;
     const updatedUsers = accessUsers.map((item) =>
       item.id === userId
         ? {
@@ -3922,44 +4164,51 @@ export const MasterDataSetupAccessView: React.FC<{
     );
     setHasSavedRegistry(true);
     setAccessUsers(updatedUsers);
-    saveMasterData('access_users_registry', updatedUsers);
 
     const canApproveHead = accessRole === 'Chief Audit Executive' || accessRole === 'System administrator';
     const canApproveIndependent = ['Audit Division Head', 'Audit Supervisor', 'Independent Reviewer'].includes(accessRole);
     const canApproveCAE = accessRole === 'Chief Audit Executive';
 
-    if (onUpdateUserProfile) {
-      onUpdateUserProfile({
-        id: userId,
-        name: targetUser.name,
+    try {
+      await saveMasterData('access_users_registry', updatedUsers);
+
+      if (onUpdateUserProfile) {
+        await onUpdateUserProfile({
+          id: userId,
+          name: targetUser.name,
+          email: targetUser.email,
+          roleTitle: `${newRole} (Internal Audit)`,
+          fullLabel: `${targetUser.name} – ${newRole}`,
+          headerSubtitle: newRole,
+          department: 'Internal Audit',
+          canApproveHead,
+          canApproveIndependent,
+          canApproveCAE,
+          accountStatus: targetUser.status === 'Active' ? 'Active' : 'Inactive',
+          employeeNumber: (targetUser as any).employeeNumber,
+          isLocked: Boolean((targetUser as any).isLocked),
+          requiresPasswordChange: false,
+          mfaEnabled: Boolean((targetUser as any).mfaEnabled),
+          isPrivileged,
+        });
+      }
+
+      await syncUserAuthAndWorkspace({
+        fullName: targetUser.name,
         email: targetUser.email,
-        roleTitle: `${newRole} (Internal Audit)`,
-        fullLabel: `${targetUser.name} – ${newRole}`,
-        headerSubtitle: newRole,
-        department: 'Internal Audit',
-        canApproveHead,
-        canApproveIndependent,
-        canApproveCAE,
-        accountStatus: targetUser.status === 'Active' ? 'Active' : 'Inactive',
+        roleName: newRole,
+        scope: targetUser.scope,
         employeeNumber: (targetUser as any).employeeNumber,
+        isActive: targetUser.status === 'Active',
         isLocked: Boolean((targetUser as any).isLocked),
-        requiresPasswordChange: false,
-        mfaEnabled: Boolean((targetUser as any).mfaEnabled),
-        isPrivileged,
       });
+
+      notifyAccess('success', `Role for "${targetUser.name}" updated to "${newRole}".`);
+    } catch (error) {
+      setAccessUsers(prevUsers);
+      setHasSavedRegistry(prevHadSaved);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to save role update to SQL Connect.');
     }
-
-    await syncUserAuthAndWorkspace({
-      fullName: targetUser.name,
-      email: targetUser.email,
-      roleName: newRole,
-      scope: targetUser.scope,
-      employeeNumber: (targetUser as any).employeeNumber,
-      isActive: targetUser.status === 'Active',
-      isLocked: Boolean((targetUser as any).isLocked),
-    });
-
-    notifyAccess('success', `Role for "${targetUser.name}" updated to "${newRole}".`);
   };
 
   const handleToggleSuspendUser = async (usr: any) => {
@@ -3973,54 +4222,61 @@ export const MasterDataSetupAccessView: React.FC<{
     const roleName = usr.roles?.[0] || 'Assisting Auditor';
     const normR = normalizeRole(roleName);
 
-    setHasSavedRegistry(true);
-    setAccessUsers((prev) => {
-      const updated = prev.map((item) =>
-        item.id === usr.id
-          ? { ...item, status: nextStatus, lastModified: new Date().toISOString().slice(0, 10) } as any
-          : item
-      );
-      saveMasterData('access_users_registry', updated);
-      return updated;
-    });
-
-    if (onUpdateUserProfile) {
-      onUpdateUserProfile({
-        id: usr.id,
-        name: usr.name,
-        email: usr.email,
-        roleTitle: usr.title,
-        fullLabel: `${usr.name} – ${roleName}`,
-        headerSubtitle: roleName,
-        department: 'Internal Audit',
-        canApproveHead: normR === 'Chief Audit Executive' || normR === 'System administrator',
-        canApproveIndependent: normR === 'Audit Division Head' || normR === 'Audit Supervisor' || normR === 'Independent Reviewer',
-        canApproveCAE: normR === 'Chief Audit Executive',
-        accountStatus: nextStatus === 'Active' ? 'Active' : 'Inactive',
-        employeeNumber: usr.employeeNumber,
-        isLocked: Boolean(usr.isLocked),
-        requiresPasswordChange: false,
-        mfaEnabled: Boolean(usr.mfaEnabled),
-        isPrivileged: Boolean(usr.isPrivileged),
-      });
-    }
-
-    await syncUserAuthAndWorkspace({
-      fullName: usr.name,
-      email: usr.email,
-      roleName,
-      scope: usr.scope,
-      employeeNumber: usr.employeeNumber,
-      isActive: nextStatus === 'Active',
-      isLocked: Boolean(usr.isLocked),
-    });
-
-    notifyAccess(
-      'success',
-      nextStatus === 'Active'
-        ? `Account "${usr.name}" reactivated for Google Sign-In.`
-        : `Account "${usr.name}" suspended and sign-in access revoked.`
+    const prevUsers = accessUsers;
+    const prevHadSaved = hasSavedRegistry;
+    const updatedUsers = accessUsers.map((item) =>
+      item.id === usr.id
+        ? { ...item, status: nextStatus, lastModified: new Date().toISOString().slice(0, 10) } as any
+        : item
     );
+    setHasSavedRegistry(true);
+    setAccessUsers(updatedUsers);
+
+    try {
+      await saveMasterData('access_users_registry', updatedUsers);
+
+      if (onUpdateUserProfile) {
+        await onUpdateUserProfile({
+          id: usr.id,
+          name: usr.name,
+          email: usr.email,
+          roleTitle: usr.title,
+          fullLabel: `${usr.name} – ${roleName}`,
+          headerSubtitle: roleName,
+          department: 'Internal Audit',
+          canApproveHead: normR === 'Chief Audit Executive' || normR === 'System administrator',
+          canApproveIndependent: normR === 'Audit Division Head' || normR === 'Audit Supervisor' || normR === 'Independent Reviewer',
+          canApproveCAE: normR === 'Chief Audit Executive',
+          accountStatus: nextStatus === 'Active' ? 'Active' : 'Inactive',
+          employeeNumber: usr.employeeNumber,
+          isLocked: Boolean(usr.isLocked),
+          requiresPasswordChange: false,
+          mfaEnabled: Boolean(usr.mfaEnabled),
+          isPrivileged: Boolean(usr.isPrivileged),
+        });
+      }
+
+      await syncUserAuthAndWorkspace({
+        fullName: usr.name,
+        email: usr.email,
+        roleName,
+        scope: usr.scope,
+        employeeNumber: usr.employeeNumber,
+        isActive: nextStatus === 'Active',
+        isLocked: Boolean(usr.isLocked),
+      });
+
+      notifyAccess(
+        'success',
+        nextStatus === 'Active'
+          ? `Account "${usr.name}" reactivated for Google Sign-In.`
+          : `Account "${usr.name}" suspended and sign-in access revoked.`
+      );
+    } catch (error) {
+      setAccessUsers(prevUsers);
+      setHasSavedRegistry(prevHadSaved);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to update user status in SQL Connect.');
+    }
   };
 
   const handleRemoveAccessUser = async (usr: any) => {
@@ -4030,23 +4286,33 @@ export const MasterDataSetupAccessView: React.FC<{
       return;
     }
 
+    const prevUsers = accessUsers;
+    const prevHadSaved = hasSavedRegistry;
+    const updatedUsers = accessUsers.filter((item) => item.id !== usr.id);
     setHasSavedRegistry(true);
-    setAccessUsers((prev) => {
-      const updated = prev.filter((item) => item.id !== usr.id);
-      saveMasterData('access_users_registry', updated);
-      return updated;
-    });
+    setAccessUsers(updatedUsers);
 
-    if (onDeleteUserProfile) {
-      onDeleteUserProfile(usr.id);
+    try {
+      await saveMasterData('access_users_registry', updatedUsers);
+
+      if (onDeleteUserProfile) {
+        await onDeleteUserProfile(usr.id);
+      }
+
+      if (mail) {
+        const delRes = await adminDeleteSystemUserByEmail(mail);
+        if (!delRes.success) {
+          throw new Error(delRes.error || 'Unable to delete system user from SQL Connect.');
+        }
+        await syncWorkspaceMembershipForEmail(mail, false);
+      }
+
+      notifyAccess('success', `User "${usr.name}" removed from access control.`);
+    } catch (error) {
+      setAccessUsers(prevUsers);
+      setHasSavedRegistry(prevHadSaved);
+      notifyAccess('error', error instanceof Error ? error.message : 'Unable to remove user account from SQL Connect.');
     }
-
-    if (mail) {
-      await adminDeleteSystemUserByEmail(mail);
-      await syncWorkspaceMembershipForEmail(mail, false);
-    }
-
-    notifyAccess('success', `User "${usr.name}" removed from access control.`);
   };
 
 
@@ -4056,6 +4322,19 @@ export const MasterDataSetupAccessView: React.FC<{
   if (tab === 'master-data') {
     return (
       <div className="space-y-4">
+        {accessNotice && (
+          <div
+            role={accessNotice.type === 'error' ? 'alert' : 'status'}
+            className={`px-4 py-2.5 rounded-md flex items-center justify-between text-xs font-medium border ${
+              accessNotice.type === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : 'bg-red-50 border-red-200 text-red-900'
+            }`}
+          >
+            <span>{accessNotice.msg}</span>
+            <button type="button" onClick={() => setAccessNotice(null)} className="ml-4 font-bold cursor-pointer">✕</button>
+          </div>
+        )}
         {/* Top 2-Column Grid: Entity types & Audit categories */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Left Card: Entity types */}
@@ -4711,6 +4990,19 @@ export const MasterDataSetupAccessView: React.FC<{
 
     return (
       <div className="space-y-4">
+        {accessNotice && (
+          <div
+            role={accessNotice.type === 'error' ? 'alert' : 'status'}
+            className={`px-4 py-2.5 rounded-md flex items-center justify-between text-xs font-medium border ${
+              accessNotice.type === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : 'bg-red-50 border-red-200 text-red-900'
+            }`}
+          >
+            <span>{accessNotice.msg}</span>
+            <button type="button" onClick={() => setAccessNotice(null)} className="ml-4 font-bold cursor-pointer">✕</button>
+          </div>
+        )}
         {/* Top Card: IMPLEMENTATION · Configuration cockpit */}
         <div className="bg-white rounded-lg border border-slate-200/90 shadow-2xs p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-5">
           <div className="max-w-2xl">
@@ -4761,8 +5053,8 @@ export const MasterDataSetupAccessView: React.FC<{
                 type="button"
                 onClick={async () => {
                   if (!window.confirm('This clears audit records and configurable master data from Supabase. Login accounts, user profiles, and role definitions will be kept. Continue?')) return;
-                  handleResetChecklist();
                   try {
+                    await handleResetChecklist();
                     if (!onResetSystemForUAT) throw new Error('The UAT reset action is not available.');
                     await onResetSystemForUAT();
                   } catch (error) {
@@ -5386,6 +5678,12 @@ export const MasterDataSetupAccessView: React.FC<{
                   ✕
                 </button>
               </div>
+
+              {accessNotice && accessNotice.type === 'error' && (
+                <div role="alert" className="mt-3 px-3 py-2 rounded border border-red-200 bg-red-50 text-xs text-red-900 font-medium">
+                  {accessNotice.msg}
+                </div>
+              )}
 
               <form onSubmit={handleSaveEditAccess} className="mt-4 space-y-3">
                 <div className="grid grid-cols-2 gap-3">

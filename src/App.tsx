@@ -119,8 +119,16 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [authError, setAuthError] = useState('');
   const [fatalError, setFatalError] = useState<Error | null>(null);
+  const [writeError, setWriteError] = useState<string | null>(null);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [showBulkImport, setShowBulkImport] = useState(false);
+
+  const reportWriteError = (err: unknown, fallback: string): Error => {
+    const error = err instanceof Error ? err : new Error(fallback);
+    console.error(fallback, error);
+    setWriteError(error.message || fallback);
+    return error;
+  };
 
   // Subscribe to Firebase Authentication state
   useEffect(() => {
@@ -291,7 +299,7 @@ export default function App() {
                   if (!cancelled) setEngagements(latest);
                 })
                 .catch((err) => {
-                  console.error('Failed to refresh engagements from Firestore:', err);
+                  console.error('Failed to refresh engagements from Firebase Data Connect:', err);
                 });
             }, 250);
           },
@@ -304,8 +312,10 @@ export default function App() {
         });
       } catch (err) {
         if (!cancelled) {
-          console.error('Failed to load data from Firestore:', err);
-          setFatalError(err instanceof Error ? err : new Error('Failed to load workspace data from Firestore.'));
+          console.error('Failed to load workspace data from Firebase Data Connect:', err);
+          setFatalError(
+            err instanceof Error ? err : new Error('Failed to load workspace data from Firebase Data Connect.')
+          );
         }
       } finally {
         if (!cancelled) {
@@ -323,9 +333,16 @@ export default function App() {
     };
   }, [authReady, authSession?.userId, authSession?.role, authSession?.appRole]);
 
-  const handleUpdateIssue = (issue: IssueRegisterItem) => {
-    setIssues((prev) => prev.map((i) => i.id === issue.id ? issue : i));
-    upsertIssue(issue);
+  const handleUpdateIssue = async (issue: IssueRegisterItem) => {
+    const previous = issues;
+    setWriteError(null);
+    setIssues((prev) => prev.map((i) => (i.id === issue.id ? issue : i)));
+    try {
+      await upsertIssue(issue);
+    } catch (err) {
+      setIssues(previous);
+      throw reportWriteError(err, 'Failed to save issue changes to Firebase Data Connect.');
+    }
   };
 
   const handleBulkImport = async (
@@ -575,8 +592,9 @@ export default function App() {
             nextIdentifierSequence(engagement.workingNotes, 'WP')
           );
           const conclusion = getText(row, 'conclusion');
+          const rawNoteId = getText(row, 'id');
           const note: WorkingNote = {
-            id: ref.toLowerCase(),
+            id: rawNoteId ? rawNoteId.toLowerCase() : `${engagement.id}-${ref.toLowerCase()}`,
             ref,
             title: getText(row, 'title'),
             controlArea: getText(row, 'control_area'),
@@ -607,8 +625,9 @@ export default function App() {
             'FN',
             nextIdentifierSequence(engagement.findings, 'FN')
           );
+          const rawFindingId = getText(row, 'id');
           const finding: AuditFinding = {
-            id: ref.toLowerCase(),
+            id: rawFindingId ? rawFindingId.toLowerCase() : `${engagement.id}-${ref.toLowerCase()}`,
             ref,
             title: getText(row, 'title'),
             severity: getText(row, 'severity'),
@@ -700,24 +719,64 @@ export default function App() {
     return { imported: rows.length - failures.length, failures };
   };
 
-  const handleAddUniverseEntity = (entity: UniverseEntity) => {
+  const handleAddUniverseEntity = async (entity: UniverseEntity) => {
+    const previous = universe;
+    setWriteError(null);
     setUniverse((prev) => [entity, ...prev]);
-    upsertUniverseEntity(entity);
+    try {
+      await upsertUniverseEntity(entity);
+    } catch (err) {
+      setUniverse(previous);
+      throw reportWriteError(err, 'Failed to save audit universe entity to Firebase Data Connect.');
+    }
   };
 
-  const handleUpdateUniverseEntity = (entity: UniverseEntity) => {
-    setUniverse((prev) => prev.map((item) => item.id === entity.id ? entity : item));
-    upsertUniverseEntity(entity);
+  const handleUpdateUniverseEntity = async (entity: UniverseEntity) => {
+    const previous = universe;
+    setWriteError(null);
+    setUniverse((prev) => prev.map((item) => (item.id === entity.id ? entity : item)));
+    try {
+      await upsertUniverseEntity(entity);
+    } catch (err) {
+      setUniverse(previous);
+      throw reportWriteError(err, 'Failed to update audit universe entity in Firebase Data Connect.');
+    }
   };
 
-  const handleUpdateEngagement = (engagement: AuditEngagement) => {
-    setEngagements((prev) => prev.map((item) => item.id === engagement.id ? engagement : item));
-    upsertEngagement(engagement);
+  const handleAddEngagement = async (newEng: AuditEngagement) => {
+    const previous = engagements;
+    setWriteError(null);
+    setEngagements((prev) => [newEng, ...prev]);
+    try {
+      await upsertEngagement(newEng);
+    } catch (err) {
+      setEngagements(previous);
+      throw reportWriteError(err, 'Failed to save new engagement to Firebase Data Connect.');
+    }
   };
 
-  const handleDeleteUniverseEntity = (id: string) => {
+  const handleUpdateEngagement = async (engagement: AuditEngagement) => {
+    const previous = engagements;
+    setWriteError(null);
+    setEngagements((prev) => prev.map((item) => (item.id === engagement.id ? engagement : item)));
+    try {
+      await upsertEngagement(engagement);
+    } catch (err) {
+      setEngagements(previous);
+      throw reportWriteError(err, 'Failed to update engagement in Firebase Data Connect.');
+    }
+  };
+
+  const handleDeleteUniverseEntity = async (id: string) => {
+    const previous = universe;
+    setWriteError(null);
     setUniverse((prev) => prev.filter((u) => u.id !== id));
-    deleteUniverseEntity(id);
+    try {
+      await deleteUniverseEntity(id);
+    } catch (err) {
+      setUniverse(previous);
+      throw reportWriteError(err, 'Failed to delete audit universe entity from Firebase Data Connect.');
+    }
   };
 
   const handleSyncUniverseFromSupabase = async () => {
@@ -729,23 +788,49 @@ export default function App() {
     return res;
   };
 
-  const handleAddUserProfile = (profile: UserProfile) => {
+  const handleAddUserProfile = async (profile: UserProfile) => {
+    const previous = userProfiles;
+    setWriteError(null);
     setUserProfiles((prev) => [...prev, profile]);
-    upsertUserProfile(profile);
+    try {
+      await upsertUserProfile(profile);
+    } catch (err) {
+      setUserProfiles(previous);
+      throw reportWriteError(err, 'Failed to save user profile to Firebase Data Connect.');
+    }
   };
 
-  const handleUpdateUserProfile = (profile: UserProfile) => {
-    setUserProfiles((prev) => prev.map((p) => p.id === profile.id ? profile : p));
-    upsertUserProfile(profile);
+  const handleUpdateUserProfile = async (profile: UserProfile) => {
+    const previous = userProfiles;
+    setWriteError(null);
+    setUserProfiles((prev) => prev.map((p) => (p.id === profile.id ? profile : p)));
+    try {
+      await upsertUserProfile(profile);
+    } catch (err) {
+      setUserProfiles(previous);
+      throw reportWriteError(err, 'Failed to update user profile in Firebase Data Connect.');
+    }
   };
 
-  const handleDeleteUserProfile = (id: string) => {
+  const handleDeleteUserProfile = async (id: string) => {
+    const previous = userProfiles;
+    setWriteError(null);
     setUserProfiles((prev) => prev.filter((p) => p.id !== id));
-    deleteUserProfile(id);
+    try {
+      await deleteUserProfile(id);
+    } catch (err) {
+      setUserProfiles(previous);
+      throw reportWriteError(err, 'Failed to delete user profile from Firebase Data Connect.');
+    }
   };
 
-  const handleSaveSizing = (configs: SizingConfig[]) => {
-    saveSizingConfigs(configs);
+  const handleSaveSizing = async (configs: SizingConfig[]) => {
+    setWriteError(null);
+    try {
+      await saveSizingConfigs(configs);
+    } catch (err) {
+      throw reportWriteError(err, 'Failed to save engagement sizing configuration.');
+    }
   };
 
   // Navigation & Lifecycle Progress State
@@ -851,115 +936,148 @@ export default function App() {
     setActiveLifecycleStage(eng.lifecycleStage);
   };
 
-  const handleAdvanceEngagementStage = (nextStage: LifecycleStageId) => {
+  const handleAdvanceEngagementStage = async (nextStage: LifecycleStageId) => {
     if (!selectedEngagementId) return;
+    const eng = engagements.find((item) => item.id === selectedEngagementId);
+    if (!eng) return;
+
+    const previousEngagements = engagements;
+    const previousStage = activeLifecycleStage;
+    setWriteError(null);
+
+    const nextStatus =
+      nextStage === 1
+        ? 'Planned'
+        : nextStage === 2
+        ? 'In progress'
+        : nextStage >= 6
+        ? 'Closed'
+        : 'Reporting';
+    const logEntry = {
+      id: `${eng.id}-${formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase()}`,
+      timestamp: new Date().toLocaleString('en-GB'),
+      actor: currentUser?.name ?? '',
+      action: `Engagement lifecycle advanced to Stage 0${nextStage}`,
+    };
+    const updated: AuditEngagement = {
+      ...eng,
+      lifecycleStage: nextStage,
+      status: nextStatus,
+      fieldworkPct: nextStage >= 3 ? Math.max(eng.fieldworkPct, 75) : eng.fieldworkPct,
+      modifiedBy: getCurrentAccountEmail(),
+      modifiedAt: new Date().toISOString(),
+      activityLog: [logEntry, ...eng.activityLog],
+    };
+
     setActiveLifecycleStage(nextStage);
-    setEngagements((prev) =>
-      prev.map((eng) => {
-        if (eng.id !== selectedEngagementId) return eng;
-        const nextStatus =
-          nextStage === 1
-            ? 'Planned'
-            : nextStage === 2
-            ? 'In progress'
-            : nextStage >= 6
-            ? 'Closed'
-            : 'Reporting';
-        const logEntry = {
-          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
-          timestamp: '4 Oct 2026, 14:10',
-          actor: currentUser?.name ?? '',
-          action: `Engagement lifecycle advanced to Stage 0${nextStage}`,
-        };
-        const updated: AuditEngagement = {
-          ...eng,
-          lifecycleStage: nextStage,
-          status: nextStatus,
-          fieldworkPct: nextStage >= 3 ? Math.max(eng.fieldworkPct, 75) : eng.fieldworkPct,
-          activityLog: [logEntry, ...eng.activityLog],
-        };
-        upsertEngagement(updated);
-        insertActivityLog(eng.id, logEntry);
-        return updated;
-      })
-    );
+    setEngagements((prev) => prev.map((item) => (item.id === selectedEngagementId ? updated : item)));
+    try {
+      await Promise.all([upsertEngagement(updated), insertActivityLog(eng.id, logEntry)]);
+    } catch (err) {
+      setEngagements(previousEngagements);
+      setActiveLifecycleStage(previousStage);
+      throw reportWriteError(err, 'Failed to save engagement stage change to Firebase Data Connect.');
+    }
   };
 
-  const handleApproveWorkingNote = (
+  const handleApproveWorkingNote = async (
     engagementId: string,
     noteId: string,
     newStatus: WorkingNote['status'],
     comment?: string
   ) => {
-    setEngagements((prev) =>
-      prev.map((eng) => {
-        if (eng.id !== engagementId) return eng;
-        const updatedNotes = eng.workingNotes.map((wn) =>
-          wn.id === noteId
-            ? {
-                ...wn,
-                status: newStatus,
-                updatedAt: '4 Oct 2026, 14:15',
-                reviewerComments: comment || wn.reviewerComments,
-              }
-            : wn
-        );
-        const noteObj = eng.workingNotes.find((w) => w.id === noteId);
-        const updatedNote = updatedNotes.find((w) => w.id === noteId);
-        if (updatedNote) upsertWorkingNote(engagementId, updatedNote);
+    const eng = engagements.find((item) => item.id === engagementId);
+    if (!eng) return;
 
-        const logEntry = {
-          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
-          timestamp: '4 Oct 2026, 14:15',
-          actor: currentUser?.name ?? '',
-          action: `${noteObj?.ref || 'Working note'} marked as ${newStatus}`,
-          detail: comment ? `Reviewer note: ${comment}` : undefined,
-        };
-        const updated: AuditEngagement = {
-          ...eng,
-          fieldworkPct: Math.min(100, eng.fieldworkPct + 12),
-          workingNotes: updatedNotes,
-          activityLog: [logEntry, ...eng.activityLog],
-        };
-        upsertEngagement(updated);
-        insertActivityLog(engagementId, logEntry);
-        return updated;
-      })
+    const previousEngagements = engagements;
+    setWriteError(null);
+    const updatedNotes = eng.workingNotes.map((wn) =>
+      wn.id === noteId
+        ? {
+            ...wn,
+            status: newStatus,
+            updatedAt: new Date().toLocaleString('en-GB'),
+            reviewerComments: comment || wn.reviewerComments,
+            modifiedBy: getCurrentAccountEmail(),
+            modifiedAt: new Date().toISOString(),
+          }
+        : wn
     );
+    const noteObj = eng.workingNotes.find((w) => w.id === noteId);
+    const updatedNote = updatedNotes.find((w) => w.id === noteId);
+    const logEntry = {
+      id: `${eng.id}-${formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase()}`,
+      timestamp: new Date().toLocaleString('en-GB'),
+      actor: currentUser?.name ?? '',
+      action: `${noteObj?.ref || 'Working note'} marked as ${newStatus}`,
+      detail: comment ? `Reviewer note: ${comment}` : undefined,
+    };
+    const updated: AuditEngagement = {
+      ...eng,
+      fieldworkPct: Math.min(100, eng.fieldworkPct + 12),
+      modifiedBy: getCurrentAccountEmail(),
+      modifiedAt: new Date().toISOString(),
+      workingNotes: updatedNotes,
+      activityLog: [logEntry, ...eng.activityLog],
+    };
+
+    setEngagements((prev) => prev.map((item) => (item.id === engagementId ? updated : item)));
+    try {
+      await Promise.all([
+        ...(updatedNote ? [upsertWorkingNote(engagementId, updatedNote)] : []),
+        upsertEngagement(updated),
+        insertActivityLog(engagementId, logEntry),
+      ]);
+    } catch (err) {
+      setEngagements(previousEngagements);
+      throw reportWriteError(err, 'Failed to save working note review to Firebase Data Connect.');
+    }
   };
 
-  const handleCompleteActivity = (engagementId: string, activityId: string) => {
-    setEngagements((prev) =>
-      prev.map((eng) => {
-        if (eng.id !== engagementId) return eng;
-        const actObj = eng.timelineActivities.find((a) => a.id === activityId);
-        const updatedActivities = eng.timelineActivities.map((a) =>
-          a.id === activityId
-            ? { ...a, status: 'Completed' as const, completedDate: '4 Oct 2026' }
-            : a
-        );
-        const updatedActivity = updatedActivities.find((a) => a.id === activityId);
-        if (updatedActivity) upsertTimelineActivity(engagementId, updatedActivity);
+  const handleCompleteActivity = async (engagementId: string, activityId: string) => {
+    const eng = engagements.find((item) => item.id === engagementId);
+    if (!eng) return;
 
-        const logEntry = {
-          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
-          timestamp: '4 Oct 2026, 14:18',
-          actor: currentUser?.name ?? '',
-          action: `Timeline activity completed: ${actObj?.name || ''}`,
-        };
-        const updated: AuditEngagement = {
-          ...eng,
-          timelineActivities: updatedActivities,
-          activityLog: [logEntry, ...eng.activityLog],
-        };
-        upsertEngagement(updated);
-        insertActivityLog(engagementId, logEntry);
-        return updated;
-      })
+    const previousEngagements = engagements;
+    setWriteError(null);
+    const actObj = eng.timelineActivities.find((a) => a.id === activityId);
+    const completedDate = new Date().toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+    const updatedActivities = eng.timelineActivities.map((a) =>
+      a.id === activityId ? { ...a, status: 'Completed' as const, completedDate } : a
     );
+    const updatedActivity = updatedActivities.find((a) => a.id === activityId);
+    const logEntry = {
+      id: `${eng.id}-${formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase()}`,
+      timestamp: new Date().toLocaleString('en-GB'),
+      actor: currentUser?.name ?? '',
+      action: `Timeline activity completed: ${actObj?.name || ''}`,
+    };
+    const updated: AuditEngagement = {
+      ...eng,
+      modifiedBy: getCurrentAccountEmail(),
+      modifiedAt: new Date().toISOString(),
+      timelineActivities: updatedActivities,
+      activityLog: [logEntry, ...eng.activityLog],
+    };
+
+    setEngagements((prev) => prev.map((item) => (item.id === engagementId ? updated : item)));
+    try {
+      await Promise.all([
+        ...(updatedActivity ? [upsertTimelineActivity(engagementId, updatedActivity)] : []),
+        upsertEngagement(updated),
+        insertActivityLog(engagementId, logEntry),
+      ]);
+    } catch (err) {
+      setEngagements(previousEngagements);
+      throw reportWriteError(err, 'Failed to save timeline activity completion to Firebase Data Connect.');
+    }
   };
 
-  const handleAddWorkingNote = (
+  const handleAddWorkingNote = async (
     engagementId: string,
     title: string,
     controlArea: string,
@@ -967,245 +1085,356 @@ export default function App() {
     observations: string,
     conclusion: WorkingNote['conclusion']
   ) => {
-    setEngagements((prev) =>
-      prev.map((eng) => {
-        if (eng.id !== engagementId) return eng;
-        const nextNum = eng.workingNotes.length + 1;
-        const ref = formatIdentifier('WP', nextNum);
-        const newNote: WorkingNote = {
-          id: ref.toLowerCase(),
-          ref,
-          title,
-          controlArea,
-          author: currentUser?.name ?? '',
-          status: 'For head review',
-          hasException: conclusion === 'Exception noted',
-          updatedAt: '4 Oct 2026, 14:20',
-          testingProcedure: procedure,
-          observations,
-          conclusion,
-        };
-        upsertWorkingNote(engagementId, newNote);
+    const eng = engagements.find((item) => item.id === engagementId);
+    if (!eng) return;
 
-        const logEntry = {
-          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
-          timestamp: '4 Oct 2026, 14:20',
-          actor: currentUser?.name ?? '',
-          action: `${ref} (${title}) created and submitted for review`,
-        };
-        const updated: AuditEngagement = {
-          ...eng,
-          workingNotes: [...eng.workingNotes, newNote],
-          activityLog: [logEntry, ...eng.activityLog],
-        };
-        upsertEngagement(updated);
-        insertActivityLog(engagementId, logEntry);
-        return updated;
-      })
-    );
+    const previousEngagements = engagements;
+    setWriteError(null);
+    const nextNum = nextIdentifierSequence(eng.workingNotes, 'WP');
+    const ref = formatIdentifier('WP', nextNum);
+    const actorEmail = getCurrentAccountEmail();
+    const nowIso = new Date().toISOString();
+    const newNote: WorkingNote = {
+      id: `${eng.id}-${ref.toLowerCase()}`,
+      ref,
+      title,
+      controlArea,
+      author: currentUser?.name ?? '',
+      status: 'For head review',
+      hasException: conclusion === 'Exception noted',
+      updatedAt: new Date().toLocaleString('en-GB'),
+      testingProcedure: procedure,
+      observations,
+      conclusion,
+      addedBy: actorEmail,
+      modifiedBy: actorEmail,
+      modifiedAt: nowIso,
+    };
+    const logEntry = {
+      id: `${eng.id}-${formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase()}`,
+      timestamp: new Date().toLocaleString('en-GB'),
+      actor: currentUser?.name ?? '',
+      action: `${ref} (${title}) created and submitted for review`,
+    };
+    const updated: AuditEngagement = {
+      ...eng,
+      modifiedBy: actorEmail,
+      modifiedAt: nowIso,
+      workingNotes: [...eng.workingNotes, newNote],
+      activityLog: [logEntry, ...eng.activityLog],
+    };
+
+    setEngagements((prev) => prev.map((item) => (item.id === engagementId ? updated : item)));
+    try {
+      await Promise.all([
+        upsertWorkingNote(engagementId, newNote),
+        upsertEngagement(updated),
+        insertActivityLog(engagementId, logEntry),
+      ]);
+    } catch (err) {
+      setEngagements(previousEngagements);
+      throw reportWriteError(err, 'Failed to save working note to Firebase Data Connect.');
+    }
   };
 
-  const handleValidateAndCloseFinding = (engagementId: string, findingId: string) => {
-    setEngagements((prev) =>
-      prev.map((eng) => {
-        if (eng.id !== engagementId) return eng;
-        const fnd = eng.findings.find((f) => f.id === findingId);
-        const updatedFindings = eng.findings.map((f) =>
-          f.id === findingId ? { ...f, status: 'Validated & Closed' as const } : f
-        );
-        const updatedFinding = updatedFindings.find((f) => f.id === findingId);
-        if (updatedFinding) upsertFinding(engagementId, updatedFinding);
+  const handleValidateAndCloseFinding = async (engagementId: string, findingId: string) => {
+    const eng = engagements.find((item) => item.id === engagementId);
+    if (!eng) return;
 
-        const logEntry = {
-          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
-          timestamp: '4 Oct 2026, 14:25',
-          actor: currentUser?.name ?? '',
-          action: `Finding ${fnd?.ref || ''} evidence validated & closed`,
-        };
-        const updated: AuditEngagement = {
-          ...eng,
-          findings: updatedFindings,
-          activityLog: [logEntry, ...eng.activityLog],
-        };
-        upsertEngagement(updated);
-        insertActivityLog(engagementId, logEntry);
-        return updated;
-      })
+    const previousEngagements = engagements;
+    const previousStage = activeLifecycleStage;
+    setWriteError(null);
+    const fnd = eng.findings.find((f) => f.id === findingId);
+    const updatedFindings = eng.findings.map((f) =>
+      f.id === findingId
+        ? {
+            ...f,
+            status: 'Validated & Closed' as const,
+            modifiedBy: getCurrentAccountEmail(),
+            modifiedAt: new Date().toISOString(),
+          }
+        : f
     );
+    const updatedFinding = updatedFindings.find((f) => f.id === findingId);
+    const logEntry = {
+      id: `${eng.id}-${formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase()}`,
+      timestamp: new Date().toLocaleString('en-GB'),
+      actor: currentUser?.name ?? '',
+      action: `Finding ${fnd?.ref || ''} evidence validated & closed`,
+    };
+    const updated: AuditEngagement = {
+      ...eng,
+      modifiedBy: getCurrentAccountEmail(),
+      modifiedAt: new Date().toISOString(),
+      findings: updatedFindings,
+      activityLog: [logEntry, ...eng.activityLog],
+    };
+
+    setEngagements((prev) => prev.map((item) => (item.id === engagementId ? updated : item)));
     setActiveLifecycleStage(6);
+    try {
+      await Promise.all([
+        ...(updatedFinding ? [upsertFinding(engagementId, updatedFinding)] : []),
+        upsertEngagement(updated),
+        insertActivityLog(engagementId, logEntry),
+      ]);
+    } catch (err) {
+      setEngagements(previousEngagements);
+      setActiveLifecycleStage(previousStage);
+      throw reportWriteError(err, 'Failed to save finding closure to Firebase Data Connect.');
+    }
   };
 
-  const handleAddFinding = (engagementId: string, finding: AuditFinding) => {
-    setEngagements((prev) =>
-      prev.map((eng) => {
-        if (eng.id !== engagementId) return eng;
-        upsertFinding(engagementId, finding);
-        const logEntry = {
-          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
-          timestamp: '4 Oct 2026, 14:28',
-          actor: currentUser?.name ?? '',
-          action: `Finding ${finding.ref} (${finding.title}) drafted`,
-          detail: `Severity: ${finding.severity} · Linked to ${finding.linkedNoteRef}`,
-        };
-        const updated: AuditEngagement = {
-          ...eng,
-          findings: [...eng.findings, finding],
-          activityLog: [logEntry, ...eng.activityLog],
-        };
-        upsertEngagement(updated);
-        insertActivityLog(engagementId, logEntry);
-        return updated;
-      })
-    );
+  const handleAddFinding = async (engagementId: string, finding: AuditFinding) => {
+    const eng = engagements.find((item) => item.id === engagementId);
+    if (!eng) return;
+
+    const previousEngagements = engagements;
+    setWriteError(null);
+    const actorEmail = getCurrentAccountEmail();
+    const nowIso = new Date().toISOString();
+    const enrichedFinding: AuditFinding = {
+      ...finding,
+      addedBy: finding.addedBy || actorEmail,
+      modifiedBy: actorEmail,
+      modifiedAt: nowIso,
+    };
+    const logEntry = {
+      id: `${eng.id}-${formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase()}`,
+      timestamp: new Date().toLocaleString('en-GB'),
+      actor: currentUser?.name ?? '',
+      action: `Finding ${enrichedFinding.ref} (${enrichedFinding.title}) drafted`,
+      detail: `Severity: ${enrichedFinding.severity} · Linked to ${enrichedFinding.linkedNoteRef}`,
+    };
+    const updated: AuditEngagement = {
+      ...eng,
+      modifiedBy: actorEmail,
+      modifiedAt: nowIso,
+      findings: [...eng.findings, enrichedFinding],
+      activityLog: [logEntry, ...eng.activityLog],
+    };
+
+    setEngagements((prev) => prev.map((item) => (item.id === engagementId ? updated : item)));
+    try {
+      await Promise.all([
+        upsertFinding(engagementId, enrichedFinding),
+        upsertEngagement(updated),
+        insertActivityLog(engagementId, logEntry),
+      ]);
+    } catch (err) {
+      setEngagements(previousEngagements);
+      throw reportWriteError(err, 'Failed to save audit finding to Firebase Data Connect.');
+    }
   };
 
-  const handleUpdateFindingStatus = (
+  const handleUpdateFindingStatus = async (
     engagementId: string,
     findingId: string,
     newStatus: AuditFinding['status'],
     owner?: string,
     targetDate?: string
   ) => {
-    setEngagements((prev) =>
-      prev.map((eng) => {
-        if (eng.id !== engagementId) return eng;
-        const target = eng.findings.find((f) => f.id === findingId);
-        const updatedFindings = eng.findings.map((f) =>
-          f.id === findingId
-            ? {
-                ...f,
-                status: newStatus,
-                owner: owner || f.owner,
-                targetDate: targetDate || f.targetDate,
-              }
-            : f
-        );
-        const updatedFinding = updatedFindings.find((f) => f.id === findingId);
-        if (updatedFinding) upsertFinding(engagementId, updatedFinding);
+    const eng = engagements.find((item) => item.id === engagementId);
+    if (!eng) return;
 
-        const logEntry = {
-          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
-          timestamp: '4 Oct 2026, 14:30',
-          actor: currentUser?.name ?? '',
-          action: `${target?.ref || 'Finding'} action plan updated (${newStatus})`,
-          detail: owner && targetDate ? `Owner: ${owner} · Due ${targetDate}` : undefined,
-        };
-        const updated: AuditEngagement = {
-          ...eng,
-          findings: updatedFindings,
-          activityLog: [logEntry, ...eng.activityLog],
-        };
-        upsertEngagement(updated);
-        insertActivityLog(engagementId, logEntry);
-        return updated;
-      })
+    const previousEngagements = engagements;
+    setWriteError(null);
+    const target = eng.findings.find((f) => f.id === findingId);
+    const actorEmail = getCurrentAccountEmail();
+    const nowIso = new Date().toISOString();
+    const updatedFindings = eng.findings.map((f) =>
+      f.id === findingId
+        ? {
+            ...f,
+            status: newStatus,
+            owner: owner || f.owner,
+            targetDate: targetDate || f.targetDate,
+            modifiedBy: actorEmail,
+            modifiedAt: nowIso,
+          }
+        : f
     );
+    const updatedFinding = updatedFindings.find((f) => f.id === findingId);
+    const logEntry = {
+      id: `${eng.id}-${formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase()}`,
+      timestamp: new Date().toLocaleString('en-GB'),
+      actor: currentUser?.name ?? '',
+      action: `${target?.ref || 'Finding'} action plan updated (${newStatus})`,
+      detail: owner && targetDate ? `Owner: ${owner} · Due ${targetDate}` : undefined,
+    };
+    const updated: AuditEngagement = {
+      ...eng,
+      modifiedBy: actorEmail,
+      modifiedAt: nowIso,
+      findings: updatedFindings,
+      activityLog: [logEntry, ...eng.activityLog],
+    };
+
+    setEngagements((prev) => prev.map((item) => (item.id === engagementId ? updated : item)));
+    try {
+      await Promise.all([
+        ...(updatedFinding ? [upsertFinding(engagementId, updatedFinding)] : []),
+        upsertEngagement(updated),
+        insertActivityLog(engagementId, logEntry),
+      ]);
+    } catch (err) {
+      setEngagements(previousEngagements);
+      throw reportWriteError(err, 'Failed to save finding action plan to Firebase Data Connect.');
+    }
   };
 
-  const handleUploadFile = (engagementId: string, file: AuditFile) => {
-    setEngagements((prev) =>
-      prev.map((eng) => {
-        if (eng.id !== engagementId) return eng;
-        insertFile(engagementId, file);
-        const logEntry = {
-          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
-          timestamp: file.uploadedAt,
-          actor: currentUser?.name ?? '',
-          action: 'File uploaded',
-          detail: `${file.folder} / ${file.name} (${file.size})`,
-        };
-        const updated: AuditEngagement = {
-          ...eng,
-          files: [file, ...eng.files],
-          activityLog: [logEntry, ...eng.activityLog],
-        };
-        upsertEngagement(updated);
-        insertActivityLog(engagementId, logEntry);
-        return updated;
-      })
-    );
+  const handleUploadFile = async (engagementId: string, file: AuditFile) => {
+    const eng = engagements.find((item) => item.id === engagementId);
+    if (!eng) return;
+
+    const previousEngagements = engagements;
+    setWriteError(null);
+    const logEntry = {
+      id: `${eng.id}-${formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase()}`,
+      timestamp: file.uploadedAt,
+      actor: currentUser?.name ?? '',
+      action: 'File uploaded',
+      detail: `${file.folder} / ${file.name} (${file.size})`,
+    };
+    const updated: AuditEngagement = {
+      ...eng,
+      modifiedBy: getCurrentAccountEmail(),
+      modifiedAt: new Date().toISOString(),
+      files: [file, ...eng.files],
+      activityLog: [logEntry, ...eng.activityLog],
+    };
+
+    setEngagements((prev) => prev.map((item) => (item.id === engagementId ? updated : item)));
+    try {
+      await Promise.all([
+        insertFile(engagementId, file),
+        upsertEngagement(updated),
+        insertActivityLog(engagementId, logEntry),
+      ]);
+    } catch (err) {
+      setEngagements(previousEngagements);
+      throw reportWriteError(err, 'Failed to save uploaded file record to Firebase Data Connect.');
+    }
   };
 
-  const handleUpdateReport = (
+  const handleUpdateReport = async (
     engagementId: string,
     newStatus: AuditEngagement['reportStatus'],
     executiveSummary: string,
     reportRating?: string
   ) => {
-    setEngagements((prev) =>
-      prev.map((eng) => {
-        if (eng.id !== engagementId) return eng;
-        const logEntry = {
-          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
-          timestamp: new Date().toLocaleString('en-GB'),
-          actor: currentUser?.name ?? '',
-          action: reportRating !== undefined && reportRating !== eng.reportRating && newStatus === eng.reportStatus
-            ? `${eng.reportRef} overall rating updated to ${reportRating}`
-            : `${eng.reportRef} report status updated to ${newStatus}`,
-        };
-        const updated: AuditEngagement = {
-          ...eng,
-          reportStatus: newStatus,
-          executiveSummary,
-          ...(reportRating !== undefined ? { reportRating } : {}),
-          activityLog: [logEntry, ...eng.activityLog],
-        };
-        upsertEngagement(updated);
-        insertActivityLog(engagementId, logEntry);
-        return updated;
-      })
-    );
+    const eng = engagements.find((item) => item.id === engagementId);
+    if (!eng) return;
+
+    const previousEngagements = engagements;
+    setWriteError(null);
+    const logEntry = {
+      id: `${eng.id}-${formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase()}`,
+      timestamp: new Date().toLocaleString('en-GB'),
+      actor: currentUser?.name ?? '',
+      action:
+        reportRating !== undefined && reportRating !== eng.reportRating && newStatus === eng.reportStatus
+          ? `${eng.reportRef} overall rating updated to ${reportRating}`
+          : `${eng.reportRef} report status updated to ${newStatus}`,
+    };
+    const updated: AuditEngagement = {
+      ...eng,
+      reportStatus: newStatus,
+      executiveSummary,
+      ...(reportRating !== undefined ? { reportRating } : {}),
+      modifiedBy: getCurrentAccountEmail(),
+      modifiedAt: new Date().toISOString(),
+      activityLog: [logEntry, ...eng.activityLog],
+    };
+
+    setEngagements((prev) => prev.map((item) => (item.id === engagementId ? updated : item)));
+    try {
+      await Promise.all([
+        upsertEngagement(updated),
+        insertActivityLog(engagementId, logEntry),
+      ]);
+    } catch (err) {
+      setEngagements(previousEngagements);
+      throw reportWriteError(err, 'Failed to save audit report update to Firebase Data Connect.');
+    }
   };
 
-  const handleUpdateEngagementStatus = (engagementId: string, status: string) => {
-    setEngagements((prev) =>
-      prev.map((eng) => {
-        if (eng.id !== engagementId || eng.status === status) return eng;
-        if (!canTransitionEngagementStatus(
-          eng.status as EngagementStatus,
-          status as EngagementStatus
-        )) {
-          console.warn(`Invalid engagement status transition: ${eng.status} -> ${status}`);
-          return eng;
-        }
-        const logEntry = {
-          id: formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase(),
-          timestamp: new Date().toLocaleString('en-GB'),
-          actor: currentUser?.name ?? '',
-          action: `${eng.ref} audit status changed to ${status}`,
-        };
-        const updated = {
-          ...eng,
-          status,
-          modifiedBy: getCurrentAccountEmail(),
-          modifiedAt: new Date().toISOString(),
-          activityLog: [logEntry, ...eng.activityLog],
-        };
-        upsertEngagement(updated);
-        insertActivityLog(engagementId, logEntry);
-        return updated;
-      })
-    );
+  const handleUpdateEngagementStatus = async (engagementId: string, status: string) => {
+    const eng = engagements.find((item) => item.id === engagementId);
+    if (!eng || eng.status === status) return;
+    if (!canTransitionEngagementStatus(eng.status as EngagementStatus, status as EngagementStatus)) {
+      const msg = `Invalid engagement status transition: ${eng.status} → ${status}.`;
+      setWriteError(msg);
+      throw new Error(msg);
+    }
+
+    const previousEngagements = engagements;
+    setWriteError(null);
+    const logEntry = {
+      id: `${eng.id}-${formatIdentifier('AL', eng.activityLog.length + 1).toLowerCase()}`,
+      timestamp: new Date().toLocaleString('en-GB'),
+      actor: currentUser?.name ?? '',
+      action: `${eng.ref} audit status changed to ${status}`,
+    };
+    const updated: AuditEngagement = {
+      ...eng,
+      status,
+      modifiedBy: getCurrentAccountEmail(),
+      modifiedAt: new Date().toISOString(),
+      activityLog: [logEntry, ...eng.activityLog],
+    };
+
+    setEngagements((prev) => prev.map((item) => (item.id === engagementId ? updated : item)));
+    try {
+      await Promise.all([
+        upsertEngagement(updated),
+        insertActivityLog(engagementId, logEntry),
+      ]);
+    } catch (err) {
+      setEngagements(previousEngagements);
+      throw reportWriteError(err, 'Failed to save engagement status change to Firebase Data Connect.');
+    }
   };
 
-  const handleAutoAssignLeads = () => {
+  const handleAutoAssignLeads = async () => {
     const leads = ['A. Villanueva', 'P. Mendoza', 'J. Reyes', 'K. Lim', 'B. Tolentino'];
-    setEngagements((prev) =>
-      prev.map((eng, idx) => {
-        if (eng.status !== 'Planned') return eng;
-        const updated = { ...eng, lead: leads[idx % leads.length] };
-        upsertEngagement(updated);
-        return updated;
-      })
-    );
+    const previousEngagements = engagements;
+    setWriteError(null);
+    const modifiedBy = getCurrentAccountEmail();
+    const modifiedAt = new Date().toISOString();
+    const changed: AuditEngagement[] = [];
+    const nextEngagements = engagements.map((eng, idx) => {
+      if (eng.status !== 'Planned') return eng;
+      const updated = { ...eng, lead: leads[idx % leads.length], modifiedBy, modifiedAt };
+      changed.push(updated);
+      return updated;
+    });
+    if (changed.length === 0) return;
+
+    setEngagements(nextEngagements);
+    try {
+      await Promise.all(changed.map((item) => upsertEngagement(item)));
+    } catch (err) {
+      setEngagements(previousEngagements);
+      throw reportWriteError(err, 'Failed to save auto-assigned leads to Firebase Data Connect.');
+    }
   };
 
-  const handleDraftFromUniverse = () => {
-    const exists = engagements.some((e) => e.ref === 'AUD-2026-011');
-    if (exists) return;
+  const handleDraftFromUniverse = async () => {
+    const yearEngagements = engagements.filter((item) => item.year === 2026);
+    const maxSeq = Math.max(
+      10,
+      ...yearEngagements.map((item) => {
+        const match = item.ref.match(/^AE-2026-(\d+)$/i);
+        return match ? Number(match[1]) : 0;
+      })
+    );
+    const ref = formatYearIdentifier('AE', 2026, maxSeq + 1);
+    const actorEmail = getCurrentAccountEmail();
+    const nowIso = new Date().toISOString();
     const drafted: AuditEngagement = {
-      id: formatYearIdentifier('AE', 2026, 11).toLowerCase(),
-      ref: formatYearIdentifier('AE', 2026, 11),
+      id: ref.toLowerCase(),
+      ref,
       year: 2026,
       title: 'Fixed Assets & Head Office Procurement Audit',
       category: 'Operations',
@@ -1218,9 +1447,15 @@ export default function App() {
       lead: 'K. Lim',
       headReviewer: 'M. Santos',
       independentReviewer: 'A. Villanueva',
-      startDate: '23 Nov',
-      endDate: '29 Dec 2026',
-      durationDays: 25,
+      startDate: '2026-11-23',
+      endDate: '2026-12-29',
+      objectives: 'Verify physical existence, custody, and procurement compliance for head office fixed assets.',
+      scope: 'Head Office fixed assets and procurement transactions for FY 2026.',
+      criteria: 'Corporate Procurement Policy & Asset Management Manual.',
+      addresseeName: 'Administrative Services Head',
+      addresseeTitle: 'VP, Administrative Services',
+      copyFurnished: 'President & CEO; Chief Audit Executive',
+      durationDays: 37,
       budgetedHours: 200,
       status: 'Planned',
       readyRatio: '1/9 ready',
@@ -1229,21 +1464,38 @@ export default function App() {
       fieldworkDayCurrent: 0,
       fieldworkDayTotal: 25,
       reportStatus: 'Draft',
-      reportRef: 'IA-2026-011-RPT',
+      reportRef: `${ref.replace(/^AE-/i, 'IA-')}-RPT`,
       executiveSummary: 'Drafted automatically from the Audit Universe based on risk cycle.',
+      addedBy: actorEmail,
+      modifiedBy: actorEmail,
+      modifiedAt: nowIso,
       workingNotes: [],
       findings: [],
       timelineActivities: [],
       files: [],
       activityLog: [],
     };
-    upsertEngagement(drafted);
+    const previousEngagements = engagements;
+    setWriteError(null);
     setEngagements((prev) => [...prev, drafted]);
+    try {
+      await upsertEngagement(drafted);
+    } catch (err) {
+      setEngagements(previousEngagements);
+      throw reportWriteError(err, 'Failed to draft engagement from universe in Firebase Data Connect.');
+    }
   };
 
-  const handleSaveFrequencies = (freq: AuditFrequencies) => {
+  const handleSaveFrequencies = async (freq: AuditFrequencies) => {
+    const previous = frequencies;
+    setWriteError(null);
     setFrequenciesState(freq);
-    saveFrequencies(freq);
+    try {
+      await saveFrequencies(freq);
+    } catch (err) {
+      setFrequenciesState(previous);
+      throw reportWriteError(err, 'Failed to save audit frequencies to Firebase Data Connect.');
+    }
   };
 
   const handleSaveAuditDivisionRiskScales = async (scales: AuditDivisionRiskScale[]) => {
@@ -1275,9 +1527,11 @@ export default function App() {
         })
         .map((scale) => scale.id)
     );
+    setWriteError(null);
     await saveAuditDivisionRiskScales(scales, authSession?.token);
     const modifiedBy = getCurrentAccountEmail();
     const modifiedAt = new Date().toISOString();
+    const changedUniverse: UniverseEntity[] = [];
     const updatedUniverse = universe.map((entity) => {
       if (!entity.auditDivisionId || !changedScaleIds.has(entity.auditDivisionId)) return entity;
       const riskLevel = getAuditRiskLevel(entity.riskScore, entity.auditDivisionId, scales);
@@ -1294,9 +1548,10 @@ export default function App() {
             });
           })();
       const updated = { ...entity, riskLevel, cycleMonths, nextDue, modifiedBy, modifiedAt };
-      upsertUniverseEntity(updated);
+      changedUniverse.push(updated);
       return updated;
     });
+    const changedEngagements: AuditEngagement[] = [];
     const updatedEngagements = engagements.map((engagement) => {
       if (!engagement.auditDivisionId || !changedScaleIds.has(engagement.auditDivisionId)) return engagement;
       const riskLevel = getAuditRiskLevel(engagement.riskScore, engagement.auditDivisionId, scales);
@@ -1312,9 +1567,13 @@ export default function App() {
         modifiedBy,
         modifiedAt,
       };
-      upsertEngagement(updated);
+      changedEngagements.push(updated);
       return updated;
     });
+    await Promise.all([
+      ...changedUniverse.map((entity) => upsertUniverseEntity(entity)),
+      ...changedEngagements.map((engagement) => upsertEngagement(engagement)),
+    ]);
     setAuditDivisionRiskScales(scales);
     setUniverse(updatedUniverse);
     setEngagements(updatedEngagements);
@@ -1439,6 +1698,23 @@ export default function App() {
       />
 
       <main className="w-full max-w-[1220px] mx-auto px-4 sm:px-6 mt-2">
+        {writeError && (
+          <div
+            role="alert"
+            className="mb-3 px-4 py-2.5 bg-rose-50 border border-rose-300 rounded-md flex items-center justify-between gap-3 text-xs text-rose-900 font-medium shadow-2xs"
+          >
+            <span>
+              <strong>Save failed (Firebase Data Connect):</strong> {writeError}
+            </span>
+            <button
+              type="button"
+              onClick={() => setWriteError(null)}
+              className="font-bold text-rose-800 hover:text-rose-950 ml-2 cursor-pointer shrink-0"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         {bulkImportTargets.length > 0 && (
           <div className="mb-3 flex justify-end">
             <button type="button" onClick={() => setShowBulkImport(true)}
@@ -1571,10 +1847,7 @@ export default function App() {
                   userProfiles={userProfiles}
                   auditDivisionRiskScales={auditDivisionRiskScales}
                   onSelectEngagement={handleSelectEngagement}
-                  onAddEngagement={(newEng) => {
-                    upsertEngagement(newEng);
-                    setEngagements((prev) => [newEng, ...prev]);
-                  }}
+                  onAddEngagement={handleAddEngagement}
                   onUpdateEngagement={handleUpdateEngagement}
                   onUpdateEngagementStatus={handleUpdateEngagementStatus}
                   onAutoAssignLeads={handleAutoAssignLeads}

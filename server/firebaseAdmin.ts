@@ -25,12 +25,13 @@ export function isServiceAccountActive(): boolean {
   return serviceAccountActive;
 }
 
-function escapeRawNewlinesInJsonStrings(input: string): string {
+function escapeControlCharsInJsonStrings(input: string): string {
   let out = '';
   let inString = false;
   let escaped = false;
   for (let i = 0; i < input.length; i += 1) {
     const ch = input[i];
+    const code = input.charCodeAt(i);
     if (escaped) {
       out += ch;
       escaped = false;
@@ -46,12 +47,21 @@ function escapeRawNewlinesInJsonStrings(input: string): string {
       out += ch;
       continue;
     }
-    if (inString && ch === '\n') {
-      out += '\\n';
-      continue;
-    }
-    if (inString && ch === '\r') {
-      continue;
+    if (inString) {
+      if (ch === '\n') {
+        out += '\\n';
+        continue;
+      }
+      if (ch === '\r') {
+        continue;
+      }
+      if (ch === '\t') {
+        out += '\\t';
+        continue;
+      }
+      if (code < 0x20) {
+        continue;
+      }
     }
     out += ch;
   }
@@ -86,15 +96,30 @@ type ParsedServiceAccount = ServiceAccount & {
   client_email?: string;
 };
 
-function tryParseServiceAccountJson(raw: string): ParsedServiceAccount | null {
+function buildSafeDiagnostic(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return 'FIREBASE_SERVICE_ACCOUNT_KEY is not set in Settings → Secrets.';
+  }
+  if (!trimmed.includes('{') && /^[a-f0-9-]{20,80}$/i.test(trimmed)) {
+    return 'FIREBASE_SERVICE_ACCOUNT_KEY appears to be a key ID rather than the full service-account JSON. Paste the complete downloaded JSON file (starting with "{" and including "private_key" and "client_email") in Settings → Secrets.';
+  }
+  return 'FIREBASE_SERVICE_ACCOUNT_KEY is not valid service-account JSON (must include "private_key" and "client_email"). Paste the complete downloaded JSON key file in Settings → Secrets.';
+}
+
+function tryParseServiceAccountJson(raw: string): {
+  account: ParsedServiceAccount | null;
+  diagnostic: string | null;
+} {
   let candidate = raw
     .replace(/^\uFEFF/, '')
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2018\u2019]/g, "'")
     .trim();
-  if (!candidate) return null;
+  if (!candidate) {
+    return { account: null, diagnostic: 'FIREBASE_SERVICE_ACCOUNT_KEY is not set in Settings → Secrets.' };
+  }
 
-  // Strip accidental single/double outer wrapper quotes from .env or copy-paste
   if (
     (candidate.startsWith("'") && candidate.endsWith("'")) ||
     (candidate.startsWith('"') && candidate.endsWith('"'))
@@ -119,7 +144,8 @@ function tryParseServiceAccountJson(raw: string): ParsedServiceAccount | null {
       attempts.add(sliced.replace(/\\"/g, '"'));
     }
   } else if (candidate.includes('"private_key"') || candidate.includes('"client_email"')) {
-    attempts.add(`{${candidate}}`);
+    const trimmedEnds = candidate.replace(/^\{+/, '').replace(/\}+$/, '');
+    attempts.add(`{${trimmedEnds}}`);
   }
 
   if (!candidate.includes('{')) {
@@ -134,11 +160,12 @@ function tryParseServiceAccountJson(raw: string): ParsedServiceAccount | null {
   }
 
   for (const item of attempts) {
+    const escapedItem = escapeControlCharsInJsonStrings(item);
     const variants = [
       item,
-      escapeRawNewlinesInJsonStrings(item),
+      escapedItem,
       item.replace(/,\s*([}\]])/g, '$1'),
-      escapeRawNewlinesInJsonStrings(item).replace(/,\s*([}\]])/g, '$1'),
+      escapedItem.replace(/,\s*([}\]])/g, '$1'),
     ];
     for (const variant of variants) {
       try {
@@ -173,7 +200,7 @@ function tryParseServiceAccountJson(raw: string): ParsedServiceAccount | null {
             obj.clientEmail = clientEmail;
             obj.project_id = projectId;
             obj.projectId = projectId;
-            return obj;
+            return { account: obj, diagnostic: null };
           }
         }
       } catch {
@@ -182,7 +209,46 @@ function tryParseServiceAccountJson(raw: string): ParsedServiceAccount | null {
     }
   }
 
-  return null;
+  // Fallback extraction if JSON had unescaped internal delimiters but complete PEM + client_email
+  const pemMatch = candidate.match(
+    /-----BEGIN [A-Z0-9 ]+-----[\s\S]*?-----END [A-Z0-9 ]+-----/
+  );
+  const emailMatch = candidate.match(
+    /["']?client_?email["']?\s*:\s*["']([^"'\s]+@[^"'\s]+)["']/i
+  );
+  const projMatch = candidate.match(
+    /["']?project_?id["']?\s*:\s*["']([^"'\s]+)["']/i
+  );
+  if (pemMatch && emailMatch?.[1]) {
+    const normalizedPem = normalizePemPrivateKey(pemMatch[0]);
+    const clientEmail = emailMatch[1].trim();
+    const projectId = projMatch?.[1]?.trim() || firebaseConfig.projectId;
+    return {
+      account: {
+        private_key: normalizedPem,
+        privateKey: normalizedPem,
+        client_email: clientEmail,
+        clientEmail,
+        project_id: projectId,
+        projectId,
+      },
+      diagnostic: null,
+    };
+  }
+
+  return { account: null, diagnostic: buildSafeDiagnostic(candidate) };
+}
+
+export function getServiceAccountConfigError(): string | null {
+  if (cachedServiceAccount) return null;
+  const rawKey = (process.env.FIREBASE_SERVICE_ACCOUNT_KEY ?? '').trim();
+  const { account, diagnostic } = tryParseServiceAccountJson(rawKey);
+  if (account) {
+    cachedServiceAccount = account;
+    serviceAccountActive = true;
+    return null;
+  }
+  return diagnostic ?? 'FIREBASE_SERVICE_ACCOUNT_KEY is invalid.';
 }
 
 function getServiceAccount(): ParsedServiceAccount {
@@ -192,13 +258,13 @@ function getServiceAccount(): ParsedServiceAccount {
     throw new Error('FIREBASE_SERVICE_ACCOUNT_KEY is required for Firebase Data Connect.');
   }
 
-  const parsed = tryParseServiceAccountJson(rawKey);
-  if (!parsed) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT_KEY must contain valid service-account JSON.');
+  const { account, diagnostic } = tryParseServiceAccountJson(rawKey);
+  if (!account) {
+    throw new Error(diagnostic || 'FIREBASE_SERVICE_ACCOUNT_KEY must contain valid service-account JSON.');
   }
-  cachedServiceAccount = parsed;
+  cachedServiceAccount = account;
   serviceAccountActive = true;
-  return parsed;
+  return account;
 }
 
 export function getFirebaseAdminApp(): App {

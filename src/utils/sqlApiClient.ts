@@ -14,9 +14,8 @@ import type {
 function getApiBaseUrl(): string {
   const env = import.meta.env as ImportMetaEnv & {
     VITE_API_URL?: string;
-    APP_URL?: string;
   };
-  const configured = (env.VITE_API_URL ?? env.APP_URL ?? '').trim();
+  const configured = (env.VITE_API_URL ?? '').trim();
   return configured.replace(/\/+$/, '');
 }
 
@@ -44,15 +43,26 @@ function isJsonContentType(contentType: string | null): boolean {
   );
 }
 
-function unexpectedResponseError(label: string, res: Response): Error {
+async function unexpectedResponseError(label: string, res: Response): Promise<Error> {
   if (res.redirected) {
     const redirectPath = new URL(res.url).pathname;
     return new Error(
       `${label} was redirected to ${redirectPath}. Reopen the app in its authenticated browser session and try again.`
     );
   }
+  const contentType = res.headers.get('content-type') ?? 'unknown content type';
+  let detail = '';
+  try {
+    const text = await res.text();
+    const titleMatch = text.match(/<title>([^<]+)<\/title>/i);
+    if (titleMatch?.[1]?.trim()) {
+      detail = ` (${titleMatch[1].trim()})`;
+    }
+  } catch {
+    // Ignore body read failure
+  }
   return new Error(
-    `${label} returned a non-JSON response (${res.headers.get('content-type') ?? 'unknown content type'}). Check the hosted API routing and deployment.`
+    `${label} returned a non-JSON response (${contentType}, status ${res.status}${detail}). Check the hosted API routing and deployment.`
   );
 }
 
@@ -70,9 +80,35 @@ async function readApiError(res: Response, label: string): Promise<Error> {
 
 async function readApiJson<T>(res: Response, label: string): Promise<T> {
   if (!isJsonContentType(res.headers.get('content-type'))) {
-    throw unexpectedResponseError(label, res);
+    throw await unexpectedResponseError(label, res);
   }
   return (await res.json()) as T;
+}
+
+async function fetchWithWarmupRetry(
+  url: string,
+  init: RequestInit,
+  attempts = 3
+): Promise<Response> {
+  let lastRes: Response | null = null;
+  for (let i = 0; i < attempts; i += 1) {
+    const res = await fetch(url, init);
+    lastRes = res;
+    const contentType = res.headers.get('content-type') ?? '';
+    if (isJsonContentType(contentType)) {
+      return res;
+    }
+    const clone = res.clone();
+    const bodyText = await clone.text().catch(() => '');
+    const isWarmup =
+      contentType.includes('text/html') &&
+      (bodyText.includes('Starting Server') || bodyText.includes('warmup'));
+    if (!isWarmup || i === attempts - 1) {
+      return res;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 800 * (i + 1)));
+  }
+  return lastRes!;
 }
 
 async function getBearerHeaders(): Promise<Record<string, string> | null> {
@@ -105,7 +141,7 @@ export async function getSqlConnectStatus(): Promise<SqlConnectStatus> {
   inflightStatus = (async () => {
     try {
       const headers = await getBearerHeaders();
-      const res = await fetch(apiUrl('/api/sql/status'), {
+      const res = await fetchWithWarmupRetry(apiUrl('/api/sql/status'), {
         headers: headers ?? undefined,
         credentials: 'include',
       });
@@ -126,7 +162,16 @@ export async function getSqlConnectStatus(): Promise<SqlConnectStatus> {
         payload.engine !== 'https' ||
         payload.mode !== 'primary'
       ) {
-        throw new Error('Firebase Data Connect is not configured as the primary data store.');
+        const issue =
+          payload &&
+          typeof payload === 'object' &&
+          'schemaIssue' in payload &&
+          typeof (payload as { schemaIssue?: unknown }).schemaIssue === 'string'
+            ? (payload as { schemaIssue: string }).schemaIssue
+            : null;
+        throw new Error(
+          issue || 'Firebase Data Connect is not configured as the primary data store.'
+        );
       }
       const status = payload as SqlConnectStatus;
       cachedStatus = { uid, status };
@@ -148,7 +193,7 @@ async function requestSqlApi<T>(
   if (!headers) {
     throw new Error('Authentication required for Firebase Data Connect.');
   }
-  const res = await fetch(apiUrl(path), {
+  const res = await fetchWithWarmupRetry(apiUrl(path), {
     method,
     headers,
     credentials: 'include',
@@ -208,6 +253,23 @@ export async function fetchSqlSystemUsers(): Promise<Array<Record<string, unknow
     'GET'
   );
   return Array.isArray(res.users) ? res.users : [];
+}
+
+export async function resolveSqlAuthSession(): Promise<{
+  userId: string;
+  username: string;
+  email: string;
+  role: 'admin' | 'user';
+  appRole?: string;
+  scope?: string;
+  employeeNumber?: string;
+  fullName: string;
+}> {
+  return requestSqlApi('/api/sql/auth/session', 'GET');
+}
+
+export async function unlockSqlSystemUser(id: string, email?: string): Promise<void> {
+  await requestSqlApi('/api/sql/system-users/unlock', 'POST', { id, email });
 }
 
 export const sqlMirrorHelpers = {

@@ -14,7 +14,6 @@ export default defineConfig(() => {
       },
     },
     define: {
-      'import.meta.env.APP_URL': JSON.stringify(process.env.APP_URL ?? ''),
       // Supabase credentials — baked in at build time so they work in all
       // environments (AI Studio, local dev, production) without a .env file.
       'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(

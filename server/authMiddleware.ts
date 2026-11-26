@@ -37,7 +37,7 @@ export async function requireFirebaseAuth(
   try {
     adminAuth = getAdminAuth();
   } catch {
-    res.status(503).json({
+    res.status(500).json({
       error: 'Firebase Admin credentials are missing or invalid. Configure FIREBASE_SERVICE_ACCOUNT_KEY.',
     });
     return;
@@ -54,7 +54,7 @@ export async function requireFirebaseAuth(
   try {
     const email = typeof decoded.email === 'string' ? decoded.email.trim().toLowerCase() : '';
     if (!email || decoded.email_verified !== true) {
-      res.status(403).json({ error: 'Forbidden: A verified Google email is required.' });
+      res.status(401).json({ error: 'Forbidden: A verified Google email is required.' });
       return;
     }
 
@@ -63,10 +63,16 @@ export async function requireFirebaseAuth(
     let appRole: string | undefined = isBootstrappedAdmin ? 'System administrator' : undefined;
 
     if (hasSqlConfig()) {
-      const sqlUser = await findSqlSystemUserByEmail(email).catch(() => null);
+      const sqlUser = await findSqlSystemUserByEmail(email);
+      if (!isBootstrappedAdmin && !sqlUser) {
+        res.status(401).json({
+          error: `Access denied. Your Google account (${email}) is not registered in User accounts & role assignments. Contact your System Administrator.`,
+        });
+        return;
+      }
       if (sqlUser) {
         if (!isBootstrappedAdmin && (!sqlUser.isActive || sqlUser.isLocked)) {
-          res.status(403).json({ error: 'Forbidden: Account is locked or inactive.' });
+          res.status(401).json({ error: 'Forbidden: Account is locked or inactive.' });
           return;
         }
         isSqlAdmin = isBootstrappedAdmin || sqlUser.role === 'admin';
@@ -97,7 +103,7 @@ export function requireSqlAdmin(
     return;
   }
   if (!req.authUser.isBootstrappedAdmin && !req.authUser.isSqlAdmin) {
-    res.status(403).json({ error: 'Forbidden: Administrator privileges required.' });
+    res.status(401).json({ error: 'Forbidden: Administrator privileges required.' });
     return;
   }
   next();

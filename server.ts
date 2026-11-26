@@ -1,10 +1,14 @@
 import 'dotenv/config';
 import express from 'express';
 import path from 'node:path';
-import type { Response } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import type { AuthenticatedRequest } from './server/authMiddleware.ts';
-import { DATA_CONNECT_CONFIG } from './server/firebaseAdmin.ts';
 import {
+  DATA_CONNECT_CONFIG,
+  getServiceAccountConfigError,
+} from './server/firebaseAdmin.ts';
+import {
+  BOOTSTRAPPED_ADMIN_EMAIL,
   requireFirebaseAuth,
   requireSqlAdmin,
 } from './server/authMiddleware.ts';
@@ -16,14 +20,18 @@ import {
   ensureSqlSchema,
   fetchSqlMasterDataValue,
   fetchSqlWorkspaceSnapshot,
+  findSqlSystemUserByEmail,
   getSqlPublicConfig,
   hasSqlConfig,
   insertSqlActivityLog,
   insertSqlFile,
+  inspectDataConnectTables,
   listSqlSystemUsers,
+  recordSqlUserLogin,
   saveSqlFrequencies,
   saveSqlMasterData,
   syncWorkspaceSnapshotToSql,
+  unlockSqlSystemUser,
   upsertDataConnectAppSession,
   upsertSqlEngagement,
   upsertSqlFinding,
@@ -43,12 +51,15 @@ const ADMIN_ONLY_MASTER_KEYS = new Set([
 
 function handleApiError(res: Response, err: unknown, fallback = 'Firebase Data Connect request failed.'): void {
   const msg = err instanceof Error ? err.message : fallback;
-  res.status(500).json({ error: msg || fallback });
+  const rawStatus = (err as { statusCode?: unknown })?.statusCode;
+  const statusCode =
+    typeof rawStatus === 'number' && rawStatus >= 400 && rawStatus < 600 ? rawStatus : 500;
+  res.status(statusCode).json({ error: msg || fallback });
 }
 
-function ensureConfiguredOr503(res: Response): boolean {
+function ensureConfigured(res: Response): boolean {
   if (!hasSqlConfig()) {
-    res.status(503).json({
+    res.status(500).json({
       error: 'Firebase Data Connect service account (FIREBASE_SERVICE_ACCOUNT_KEY) is not configured.',
     });
     return false;
@@ -75,12 +86,38 @@ async function startServer() {
   });
   app.use(express.json({ limit: '10mb' }));
 
+  let startupSchemaReady = false;
+  let startupTableCount = 0;
+  let startupSchemaIssue: string | null = null;
+  let startupInspectPromise: Promise<void> | null = null;
+
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
   });
 
-  app.get('/api/sql/status', (_req, res) => {
-    res.json(getSqlPublicConfig());
+  app.get('/api/sql/status', async (_req, res) => {
+    const cfg = getSqlPublicConfig();
+    if (!cfg.configured) {
+      res.json({
+        ...cfg,
+        schemaReady: false,
+        tableCount: 0,
+        schemaIssue: getServiceAccountConfigError(),
+      });
+      return;
+    }
+    if (startupInspectPromise && !startupSchemaReady && !startupSchemaIssue) {
+      await Promise.race([
+        startupInspectPromise,
+        new Promise((resolve) => setTimeout(resolve, 4000)),
+      ]);
+    }
+    res.json({
+      ...cfg,
+      schemaReady: startupSchemaReady,
+      tableCount: startupTableCount,
+      ...(startupSchemaIssue ? { schemaIssue: startupSchemaIssue } : {}),
+    });
   });
 
   app.post(
@@ -88,23 +125,96 @@ async function startServer() {
     requireFirebaseAuth,
     requireSqlAdmin,
     async (_req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         await ensureSqlSchema(true);
-        res.json({ ok: true });
+        const inspection = await inspectDataConnectTables();
+        res.json({ ok: true, ...inspection });
       } catch (err) {
         handleApiError(res, err, 'Failed to verify the Firebase Data Connect schema.');
       }
     }
   );
 
+  app.get(
+    '/api/sql/schema/inspect',
+    requireFirebaseAuth,
+    requireSqlAdmin,
+    async (_req: AuthenticatedRequest, res) => {
+      if (!ensureConfigured(res)) return;
+      try {
+        const inspection = await inspectDataConnectTables();
+        res.json(inspection);
+      } catch (err) {
+        handleApiError(res, err, 'Failed to inspect Firebase Data Connect tables.');
+      }
+    }
+  );
+
+  app.get('/api/sql/auth/session', requireFirebaseAuth, async (req: AuthenticatedRequest, res) => {
+    if (!ensureConfigured(res)) return;
+    try {
+      const authUser = req.authUser;
+      if (!authUser) {
+        res.status(401).json({ error: 'Unauthorized.' });
+        return;
+      }
+      const email = authUser.email;
+      const isBootstrapped = email === BOOTSTRAPPED_ADMIN_EMAIL;
+      const sqlUser = await findSqlSystemUserByEmail(email);
+
+      if (!isBootstrapped && !sqlUser) {
+        res.status(401).json({
+          error: `Access denied. Your Google account (${email}) is not registered in User accounts & role assignments. Contact your System Administrator.`,
+        });
+        return;
+      }
+      if (!isBootstrapped && sqlUser && (!sqlUser.isActive || sqlUser.isLocked)) {
+        res.status(401).json({
+          error: sqlUser.isLocked
+            ? 'Your account has been locked. Please contact your system administrator.'
+            : 'Your account is deactivated. Please contact your system administrator.',
+        });
+        return;
+      }
+
+      const resolvedRole: 'admin' | 'user' =
+        isBootstrapped || sqlUser?.role === 'admin' ? 'admin' : 'user';
+      const resolvedAppRole =
+        sqlUser?.appRole ||
+        (isBootstrapped || resolvedRole === 'admin' ? 'System administrator' : 'Assisting Auditor');
+      const username = sqlUser?.username || email.split('@')[0] || authUser.uid;
+      const fullName = sqlUser?.fullName || username;
+      const scope = sqlUser?.scope || (resolvedRole === 'admin' ? 'Full access' : 'Assigned engagements');
+      const employeeNumber = sqlUser?.employeeNumber;
+
+      void recordSqlUserLogin(email).catch(() => {});
+
+      res.json({
+        userId: authUser.uid,
+        username,
+        email,
+        role: resolvedRole,
+        appRole: resolvedAppRole,
+        scope,
+        ...(employeeNumber ? { employeeNumber } : {}),
+        fullName,
+      });
+    } catch (err) {
+      handleApiError(res, err, 'Failed to resolve authenticated session from Firebase Data Connect.');
+    }
+  });
+
   app.get('/api/sql/workspace', requireFirebaseAuth, async (req: AuthenticatedRequest, res) => {
-    if (!ensureConfiguredOr503(res)) return;
+    if (!ensureConfigured(res)) return;
     try {
       const includeAdminEmails = Boolean(
         req.authUser?.isBootstrappedAdmin || req.authUser?.isSqlAdmin
       );
-      const snapshot = await fetchSqlWorkspaceSnapshot(includeAdminEmails);
+      const snapshot = await fetchSqlWorkspaceSnapshot(
+        includeAdminEmails,
+        req.authUser?.email
+      );
       res.json(snapshot);
     } catch (err) {
       handleApiError(res, err, 'Failed to load workspace from Firebase Data Connect.');
@@ -116,7 +226,7 @@ async function startServer() {
     requireFirebaseAuth,
     requireSqlAdmin,
     async (req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         const body = (req.body ?? {}) as Record<string, unknown>;
         const actor = req.authUser?.email || 'system';
@@ -129,11 +239,11 @@ async function startServer() {
   );
 
   app.put('/api/sql/engagements/:id', requireFirebaseAuth, async (req: AuthenticatedRequest, res) => {
-    if (!ensureConfiguredOr503(res)) return;
+    if (!ensureConfigured(res)) return;
     try {
       const eng = { ...((req.body ?? {}) as Record<string, unknown>), id: req.params.id };
       await upsertSqlEngagement(eng, req.authUser?.email || 'system');
-      res.json({ ok: true });
+      res.json({ ok: true, verified: true });
     } catch (err) {
       handleApiError(res, err);
     }
@@ -143,7 +253,7 @@ async function startServer() {
     '/api/sql/engagements/:engagementId/working-notes/:id',
     requireFirebaseAuth,
     async (req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         const note = { ...((req.body ?? {}) as Record<string, unknown>), id: req.params.id };
         await upsertSqlWorkingNote(
@@ -151,7 +261,7 @@ async function startServer() {
           note,
           req.authUser?.email || 'system'
         );
-        res.json({ ok: true });
+        res.json({ ok: true, verified: true });
       } catch (err) {
         handleApiError(res, err);
       }
@@ -162,7 +272,7 @@ async function startServer() {
     '/api/sql/engagements/:engagementId/findings/:id',
     requireFirebaseAuth,
     async (req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         const finding = { ...((req.body ?? {}) as Record<string, unknown>), id: req.params.id };
         await upsertSqlFinding(
@@ -170,7 +280,7 @@ async function startServer() {
           finding,
           req.authUser?.email || 'system'
         );
-        res.json({ ok: true });
+        res.json({ ok: true, verified: true });
       } catch (err) {
         handleApiError(res, err);
       }
@@ -181,11 +291,15 @@ async function startServer() {
     '/api/sql/engagements/:engagementId/timeline/:id',
     requireFirebaseAuth,
     async (req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         const activity = { ...((req.body ?? {}) as Record<string, unknown>), id: req.params.id };
-        await upsertSqlTimelineActivity(req.params.engagementId, activity);
-        res.json({ ok: true });
+        await upsertSqlTimelineActivity(
+          req.params.engagementId,
+          activity,
+          req.authUser?.email || 'system'
+        );
+        res.json({ ok: true, verified: true });
       } catch (err) {
         handleApiError(res, err);
       }
@@ -196,13 +310,14 @@ async function startServer() {
     '/api/sql/engagements/:engagementId/files',
     requireFirebaseAuth,
     async (req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         await insertSqlFile(
           req.params.engagementId,
-          (req.body ?? {}) as Record<string, unknown>
+          (req.body ?? {}) as Record<string, unknown>,
+          req.authUser?.email || 'system'
         );
-        res.json({ ok: true });
+        res.json({ ok: true, verified: true });
       } catch (err) {
         handleApiError(res, err);
       }
@@ -213,13 +328,14 @@ async function startServer() {
     '/api/sql/engagements/:engagementId/activity-log',
     requireFirebaseAuth,
     async (req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         await insertSqlActivityLog(
           req.params.engagementId,
-          (req.body ?? {}) as Record<string, unknown>
+          (req.body ?? {}) as Record<string, unknown>,
+          req.authUser?.email || 'system'
         );
-        res.json({ ok: true });
+        res.json({ ok: true, verified: true });
       } catch (err) {
         handleApiError(res, err);
       }
@@ -227,22 +343,22 @@ async function startServer() {
   );
 
   app.put('/api/sql/issues/:id', requireFirebaseAuth, async (req: AuthenticatedRequest, res) => {
-    if (!ensureConfiguredOr503(res)) return;
+    if (!ensureConfigured(res)) return;
     try {
       const issue = { ...((req.body ?? {}) as Record<string, unknown>), id: req.params.id };
       await upsertSqlIssue(issue, req.authUser?.email || 'system');
-      res.json({ ok: true });
+      res.json({ ok: true, verified: true });
     } catch (err) {
       handleApiError(res, err);
     }
   });
 
   app.put('/api/sql/universe/:id', requireFirebaseAuth, async (req: AuthenticatedRequest, res) => {
-    if (!ensureConfiguredOr503(res)) return;
+    if (!ensureConfigured(res)) return;
     try {
       const entity = { ...((req.body ?? {}) as Record<string, unknown>), id: req.params.id };
       await upsertSqlUniverseEntity(entity, req.authUser?.email || 'system');
-      res.json({ ok: true });
+      res.json({ ok: true, verified: true });
     } catch (err) {
       handleApiError(res, err);
     }
@@ -253,10 +369,10 @@ async function startServer() {
     requireFirebaseAuth,
     requireSqlAdmin,
     async (req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         await deleteSqlUniverseEntity(req.params.id);
-        res.json({ ok: true });
+        res.json({ ok: true, verified: true });
       } catch (err) {
         handleApiError(res, err);
       }
@@ -268,11 +384,11 @@ async function startServer() {
     requireFirebaseAuth,
     requireSqlAdmin,
     async (req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         const profile = { ...((req.body ?? {}) as Record<string, unknown>), id: req.params.id };
         await upsertSqlUserProfile(profile, req.authUser?.email || 'system');
-        res.json({ ok: true });
+        res.json({ ok: true, verified: true });
       } catch (err) {
         handleApiError(res, err);
       }
@@ -284,10 +400,10 @@ async function startServer() {
     requireFirebaseAuth,
     requireSqlAdmin,
     async (req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         await deleteSqlUserProfile(req.params.id);
-        res.json({ ok: true });
+        res.json({ ok: true, verified: true });
       } catch (err) {
         handleApiError(res, err);
       }
@@ -299,7 +415,7 @@ async function startServer() {
     requireFirebaseAuth,
     requireSqlAdmin,
     async (_req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         const users = await listSqlSystemUsers();
         res.json({ users });
@@ -313,7 +429,7 @@ async function startServer() {
     '/api/sql/sessions/:id',
     requireFirebaseAuth,
     async (req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         const b = (req.body ?? {}) as Record<string, unknown>;
         await upsertDataConnectAppSession({
@@ -325,7 +441,7 @@ async function startServer() {
           issuedAt: typeof b.issuedAt === 'string' ? b.issuedAt : undefined,
           expiresAt: typeof b.expiresAt === 'string' ? b.expiresAt : undefined,
         });
-        res.json({ ok: true });
+        res.json({ ok: true, verified: true });
       } catch (err) {
         handleApiError(res, err);
       }
@@ -336,10 +452,10 @@ async function startServer() {
     '/api/sql/sessions/:id',
     requireFirebaseAuth,
     async (req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         await deleteDataConnectAppSession(req.params.id);
-        res.json({ ok: true });
+        res.json({ ok: true, verified: true });
       } catch (err) {
         handleApiError(res, err);
       }
@@ -351,22 +467,46 @@ async function startServer() {
     requireFirebaseAuth,
     requireSqlAdmin,
     async (req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         const b = (req.body ?? {}) as Record<string, unknown>;
-        await upsertSqlSystemUser({
-          id: String(b.id ?? ''),
-          username: String(b.username ?? ''),
-          fullName: String(b.fullName ?? ''),
-          email: String(b.email ?? ''),
-          role: b.role === 'admin' ? 'admin' : 'user',
-          appRole: typeof b.appRole === 'string' ? b.appRole : undefined,
-          scope: typeof b.scope === 'string' ? b.scope : undefined,
-          employeeNumber: typeof b.employeeNumber === 'string' ? b.employeeNumber : undefined,
-          isActive: b.isActive !== false,
-          isLocked: b.isLocked === true,
-        });
-        res.json({ ok: true });
+        await upsertSqlSystemUser(
+          {
+            id: String(b.id ?? ''),
+            username: String(b.username ?? ''),
+            fullName: String(b.fullName ?? ''),
+            email: String(b.email ?? ''),
+            role: b.role === 'admin' ? 'admin' : 'user',
+            appRole: typeof b.appRole === 'string' ? b.appRole : undefined,
+            scope: typeof b.scope === 'string' ? b.scope : undefined,
+            employeeNumber: typeof b.employeeNumber === 'string' ? b.employeeNumber : undefined,
+            isActive: b.isActive !== false,
+            isLocked: b.isLocked === true,
+            failedLoginCount: typeof b.failedLoginCount === 'number' ? b.failedLoginCount : undefined,
+          },
+          req.authUser?.email || 'system'
+        );
+        res.json({ ok: true, verified: true });
+      } catch (err) {
+        handleApiError(res, err);
+      }
+    }
+  );
+
+  app.post(
+    '/api/sql/system-users/unlock',
+    requireFirebaseAuth,
+    requireSqlAdmin,
+    async (req: AuthenticatedRequest, res) => {
+      if (!ensureConfigured(res)) return;
+      try {
+        const b = (req.body ?? {}) as Record<string, unknown>;
+        await unlockSqlSystemUser(
+          String(b.id ?? ''),
+          typeof b.email === 'string' ? b.email : undefined,
+          req.authUser?.email || 'system'
+        );
+        res.json({ ok: true, verified: true });
       } catch (err) {
         handleApiError(res, err);
       }
@@ -378,11 +518,11 @@ async function startServer() {
     requireFirebaseAuth,
     requireSqlAdmin,
     async (req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         const email = typeof req.body?.email === 'string' ? req.body.email : '';
         await deleteSqlSystemUserByEmail(email);
-        res.json({ ok: true });
+        res.json({ ok: true, verified: true });
       } catch (err) {
         handleApiError(res, err);
       }
@@ -394,7 +534,7 @@ async function startServer() {
     requireFirebaseAuth,
     requireSqlAdmin,
     async (req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         const b = (req.body ?? {}) as Record<string, unknown>;
         await saveSqlFrequencies(
@@ -405,7 +545,7 @@ async function startServer() {
           },
           req.authUser?.email || 'system'
         );
-        res.json({ ok: true });
+        res.json({ ok: true, verified: true });
       } catch (err) {
         handleApiError(res, err);
       }
@@ -413,14 +553,14 @@ async function startServer() {
   );
 
   app.get('/api/sql/master-data/:key', requireFirebaseAuth, async (req: AuthenticatedRequest, res) => {
-    if (!ensureConfiguredOr503(res)) return;
+    if (!ensureConfigured(res)) return;
     const key = req.params.key;
     if (
       ADMIN_ONLY_MASTER_KEYS.has(key) &&
       !req.authUser?.isBootstrappedAdmin &&
       !req.authUser?.isSqlAdmin
     ) {
-      res.status(403).json({ error: 'Forbidden: Administrator privileges required.' });
+      res.status(401).json({ error: 'Forbidden: Administrator privileges required.' });
       return;
     }
     try {
@@ -436,14 +576,14 @@ async function startServer() {
     requireFirebaseAuth,
     requireSqlAdmin,
     async (req: AuthenticatedRequest, res) => {
-      if (!ensureConfiguredOr503(res)) return;
+      if (!ensureConfigured(res)) return;
       try {
         await saveSqlMasterData(
           req.params.key,
           req.body?.value ?? null,
           req.authUser?.email || 'system'
         );
-        res.json({ ok: true });
+        res.json({ ok: true, verified: true });
       } catch (err) {
         handleApiError(res, err);
       }
@@ -454,6 +594,10 @@ async function startServer() {
     res.status(404).json({
       error: `API route not found: ${req.method} ${req.originalUrl}`,
     });
+  });
+
+  app.use('/api', (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    handleApiError(res, err);
   });
 
   let viteInitError: unknown = null;
@@ -523,6 +667,21 @@ async function startServer() {
           : 'Firebase Data Connect awaiting FIREBASE_SERVICE_ACCOUNT_KEY'
       })`
     );
+    if (sqlCfg.configured) {
+      startupInspectPromise = inspectDataConnectTables()
+        .then((inspection) => {
+          startupSchemaReady = inspection.tables.length === 15;
+          startupTableCount = inspection.tables.length;
+          startupSchemaIssue = null;
+          const summary = inspection.tables.map((t) => `${t.key}:${t.rowCount}`).join(', ');
+          console.log(`[dataConnect] Verified ${inspection.tables.length} tables over HTTPS: ${summary}`);
+        })
+        .catch((err) => {
+          startupSchemaReady = false;
+          startupSchemaIssue = err instanceof Error ? err.message : 'Data Connect verification failed';
+          console.error('[dataConnect] Startup schema verification failed:', startupSchemaIssue);
+        });
+    }
   });
   server.on('error', (err) => {
     console.error(`[server] HTTP server failed on port ${port}:`, err);

@@ -8,7 +8,7 @@ import {
   PASSWORD_STRENGTH_COLORS,
 } from '../utils/security';
 import { AuditDivisionRiskScale, SizingConfig } from '../data/auditData';
-import { fetchMasterData } from '../utils/db';
+import { fetchMasterData, fetchSizing, saveMasterData } from '../utils/db';
 import { DEFAULT_AUDIT_DIVISION_RISK_SCALES } from '../utils/riskScale';
 import { formatAuditDate } from '../utils/auditMetadata';
 
@@ -29,11 +29,11 @@ interface SettingsViewProps {
     high: number;
     medium: number;
     low: number;
-  }) => void;
+  }) => Promise<void> | void;
   auditDivisionRiskScales: AuditDivisionRiskScale[];
   assignedAuditDivisionIds: string[];
   onSaveAuditDivisionRiskScales: (scales: AuditDivisionRiskScale[]) => Promise<void>;
-  onSaveSizing?: (sizing: SizingConfig[]) => void;
+  onSaveSizing?: (sizing: SizingConfig[]) => Promise<void> | void;
   onResetSystemForUAT?: () => Promise<void> | void;
 }
 
@@ -118,7 +118,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [scaleFeedback, setScaleFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const scaleEditorRef = useRef<HTMLDivElement | null>(null);
   const scaleNameInputRef = useRef<HTMLInputElement | null>(null);
-  const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [savedNotice, setSavedNotice] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
 
@@ -240,15 +240,82 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     },
   ];
 
-  const notify = (msg: string) => {
-    setSavedNotice(msg);
-    setTimeout(() => setSavedNotice(null), 3500);
+  const notify = (msg: string, type: 'success' | 'error' = 'success') => {
+    setSavedNotice({ type, msg });
+    setTimeout(() => setSavedNotice(null), type === 'error' ? 6000 : 3500);
   };
 
   const notifyScale = (type: 'success' | 'error', msg: string) => {
     setScaleFeedback({ type, message: msg });
-    notify(msg);
+    notify(msg, type);
   };
+
+  useEffect(() => {
+    setHigh(frequencies.high);
+    setMed(frequencies.medium);
+    setLow(frequencies.low);
+  }, [frequencies.high, frequencies.medium, frequencies.low]);
+
+  useEffect(() => {
+    let active = true;
+    fetchSizing()
+      .then((configs) => {
+        if (!active || !configs || configs.length === 0) return;
+        setSizingRows(
+          configs.map((s) => ({
+            id: s.id,
+            size: s.sizeName,
+            standardHours: s.budgetedHours,
+            fieldTeam: s.auditors,
+            durationWeeks: Math.max(1, Math.round((s.workingDays || 20) / 5)),
+            supervisorPct: 10,
+            aicPct: 40,
+            whenToUse: s.typicalUse,
+            canRemove: !['Medium', 'Complex'].includes(s.sizeName),
+          }))
+        );
+      })
+      .catch((err) => {
+        console.warn('Unable to load sizing configurations:', err);
+      });
+
+    fetchMasterData<{
+      orgName?: string;
+      iaUnit?: string;
+      address?: string;
+      contactLine?: string;
+      defaultCc?: string;
+      docSignatories?: typeof docSignatories;
+    } | null>('settings_letterhead', null)
+      .then((saved) => {
+        if (!active || !saved) return;
+        if (saved.orgName) setOrgName(saved.orgName);
+        if (saved.iaUnit) setIaUnit(saved.iaUnit);
+        if (saved.address) setAddress(saved.address);
+        if (saved.contactLine) setContactLine(saved.contactLine);
+        if (saved.defaultCc !== undefined) setDefaultCc(saved.defaultCc);
+        if (Array.isArray(saved.docSignatories) && saved.docSignatories.length > 0) {
+          setDocSignatories(saved.docSignatories);
+        }
+      })
+      .catch((err) => {
+        console.warn('Unable to load letterhead settings:', err);
+      });
+
+    fetchMasterData<SecurityPolicy | null>('settings_security_policy', null)
+      .then((savedPolicy) => {
+        if (!active || !savedPolicy) return;
+        setSecPolicy(savedPolicy);
+        setSecPolicyDraft(savedPolicy);
+      })
+      .catch((err) => {
+        console.warn('Unable to load security policy settings:', err);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     setDivisionScales(auditDivisionRiskScales);
@@ -288,6 +355,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       id,
       name,
     };
+    const prevScales = divisionScales;
+    const prevSelectedId = selectedDivisionId;
+    const prevDraft = divisionDraft;
+    const prevNewName = newDivisionName;
     const next = [...divisionScales, added];
     setDivisionScales(next);
     setSelectedDivisionId(id);
@@ -298,6 +369,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       await onSaveAuditDivisionRiskScales(next);
       notifyScale('success', `Added "${name}". Adjust its thresholds below and click Save division scale to update.`);
     } catch (error) {
+      setDivisionScales(prevScales);
+      setSelectedDivisionId(prevSelectedId);
+      setDivisionDraft(prevDraft);
+      setNewDivisionName(prevNewName);
       notifyScale('error', error instanceof Error ? error.message : 'Unable to save new audit division.');
     } finally {
       setIsSavingScales(false);
@@ -397,10 +472,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   };
 
-  const handleSaveFrequencies = (e: React.FormEvent) => {
+  const handleSaveFrequencies = async (e: React.FormEvent) => {
     e.preventDefault();
-    onSaveFrequencies({ high, medium: med, low });
-    notify('Audit frequencies saved.');
+    try {
+      await onSaveFrequencies({ high, medium: med, low });
+      notify('Audit frequencies saved.');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Unable to save audit frequencies.', 'error');
+    }
   };
 
   const handleConfirmReset = async () => {
@@ -415,7 +494,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       notify('System successfully reset to clean baseline state. Ready for UAT testing.');
     } catch (error) {
       console.error('UAT reset failed:', error);
-      notify(`System reset failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      notify(`System reset failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
     } finally {
       setIsResetting(false);
     }
@@ -424,12 +503,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   return (
     <div className="space-y-4">
       {savedNotice && (
-        <div className="px-4 py-2.5 bg-purple-50 border border-purple-200 rounded-md flex items-center justify-between text-xs text-purple-950 font-medium">
-          <span>{savedNotice}</span>
+        <div
+          role={savedNotice.type === 'error' ? 'alert' : 'status'}
+          className={`px-4 py-2.5 rounded-md flex items-center justify-between text-xs font-medium ${
+            savedNotice.type === 'error'
+              ? 'bg-rose-50 border border-rose-300 text-rose-900'
+              : 'bg-purple-50 border border-purple-200 text-purple-950'
+          }`}
+        >
+          <span>{savedNotice.msg}</span>
           <button
             type="button"
             onClick={() => setSavedNotice(null)}
-            className="text-[#492785] font-semibold cursor-pointer"
+            className={`font-semibold cursor-pointer ${
+              savedNotice.type === 'error' ? 'text-rose-800 hover:text-rose-950' : 'text-[#492785]'
+            }`}
           >
             Dismiss
           </button>
@@ -1013,22 +1101,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div className="mt-5 flex items-center gap-4">
           <button
             type="button"
-            onClick={() => {
-              if (onSaveSizing) {
-                const configs: SizingConfig[] = sizingRows.map((r) => ({
-                  id: r.id,
-                  sizeName: r.size,
-                  code: r.size.slice(0, 3).toUpperCase(),
-                  workingDays: r.durationWeeks * 5,
-                  calendarSpan: `${r.durationWeeks} weeks`,
-                  auditors: r.fieldTeam,
-                  hoursPerDay: 8,
-                  budgetedHours: r.standardHours,
-                  typicalUse: r.whenToUse,
-                }));
-                onSaveSizing(configs);
+            onClick={async () => {
+              try {
+                if (onSaveSizing) {
+                  const usedCodes = new Set<string>();
+                  const configs: SizingConfig[] = sizingRows.map((r, idx) => {
+                    const rawBase = r.size.replace(/[^a-zA-Z0-9]/g, '').slice(0, 3).toUpperCase() || `SZ${idx + 1}`;
+                    let code = rawBase;
+                    let suffix = 2;
+                    while (usedCodes.has(code)) {
+                      code = `${rawBase.slice(0, 2)}${suffix}`;
+                      suffix += 1;
+                    }
+                    usedCodes.add(code);
+                    return {
+                      id: r.id,
+                      sizeName: r.size,
+                      code,
+                      workingDays: r.durationWeeks * 5,
+                      calendarSpan: `${r.durationWeeks} weeks`,
+                      auditors: r.fieldTeam,
+                      hoursPerDay: 8,
+                      budgetedHours: r.standardHours,
+                      typicalUse: r.whenToUse,
+                    };
+                  });
+                  await onSaveSizing(configs);
+                }
+                notify('Engagement sizing & standard hours saved to database.');
+              } catch (error) {
+                notify(error instanceof Error ? error.message : 'Unable to save sizing configurations.', 'error');
               }
-              notify('Engagement sizing & standard hours saved to database.');
             }}
             className="px-4 py-2.5 bg-[#492785] hover:bg-[#3b1f6b] text-white text-xs font-semibold rounded-md transition-colors cursor-pointer"
           >
@@ -1167,7 +1270,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div className="mt-4">
           <button
             type="button"
-            onClick={() => notify('Letterhead & default document signatories saved.')}
+            onClick={async () => {
+              try {
+                await saveMasterData('settings_letterhead', {
+                  orgName,
+                  iaUnit,
+                  address,
+                  contactLine,
+                  defaultCc,
+                  docSignatories,
+                });
+                notify('Letterhead & default document signatories saved.');
+              } catch (error) {
+                notify(error instanceof Error ? error.message : 'Unable to save letterhead settings.', 'error');
+              }
+            }}
             className="px-4 py-2.5 bg-[#492785] hover:bg-[#3b1f6b] text-white text-xs font-semibold rounded-md transition-colors cursor-pointer"
           >
             Save letterhead &amp; signatories
@@ -1465,16 +1582,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div className="mt-6 flex items-center gap-4">
           <button
             type="button"
-            onClick={() => {
-              setSecPolicy(secPolicyDraft);
-              setSecPolicySaved(true);
+            onClick={async () => {
               try {
-                localStorage.setItem('bssc_security_policy', JSON.stringify(secPolicyDraft));
-              } catch {
-                // ignore
+                await saveMasterData('settings_security_policy', secPolicyDraft);
+                setSecPolicy(secPolicyDraft);
+                setSecPolicySaved(true);
+                try {
+                  localStorage.setItem('bssc_security_policy', JSON.stringify(secPolicyDraft));
+                } catch {
+                  // ignore
+                }
+                notify('BSSC V3 security policy saved and applied.');
+                setTimeout(() => setSecPolicySaved(false), 4000);
+              } catch (error) {
+                notify(error instanceof Error ? error.message : 'Unable to save security policy.', 'error');
               }
-              notify('BSSC V3 security policy saved and applied.');
-              setTimeout(() => setSecPolicySaved(false), 4000);
             }}
             className="px-4 py-2.5 bg-[#492785] hover:bg-[#3b1f6b] text-white text-xs font-semibold rounded-md transition-colors cursor-pointer"
           >
@@ -1482,15 +1604,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => {
-              setSecPolicyDraft(DEFAULT_SECURITY_POLICY);
-              setSecPolicy(DEFAULT_SECURITY_POLICY);
+            onClick={async () => {
               try {
-                localStorage.removeItem('bssc_security_policy');
-              } catch {
-                // ignore
+                await saveMasterData('settings_security_policy', DEFAULT_SECURITY_POLICY);
+                setSecPolicyDraft(DEFAULT_SECURITY_POLICY);
+                setSecPolicy(DEFAULT_SECURITY_POLICY);
+                try {
+                  localStorage.removeItem('bssc_security_policy');
+                } catch {
+                  // ignore
+                }
+                notify('Security policy restored to BSSC V3 defaults.');
+              } catch (error) {
+                notify(error instanceof Error ? error.message : 'Unable to restore security policy defaults.', 'error');
               }
-              notify('Security policy restored to BSSC V3 defaults.');
             }}
             className="text-xs font-semibold text-slate-700 hover:text-slate-950 cursor-pointer"
           >

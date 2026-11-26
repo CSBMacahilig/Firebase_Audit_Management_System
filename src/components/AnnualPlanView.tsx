@@ -20,11 +20,11 @@ interface AnnualPlanViewProps {
   userProfiles: UserProfile[];
   auditDivisionRiskScales: AuditDivisionRiskScale[];
   onSelectEngagement: (engagement: AuditEngagement) => void;
-  onAddEngagement: (newEng: AuditEngagement) => void;
-  onUpdateEngagement: (engagement: AuditEngagement) => void;
-  onUpdateEngagementStatus: (engagementId: string, status: string) => void;
-  onAutoAssignLeads: () => void;
-  onDraftFromUniverse: () => void;
+  onAddEngagement: (newEng: AuditEngagement) => Promise<void> | void;
+  onUpdateEngagement: (engagement: AuditEngagement) => Promise<void> | void;
+  onUpdateEngagementStatus: (engagementId: string, status: string) => Promise<void> | void;
+  onAutoAssignLeads: () => Promise<void> | void;
+  onDraftFromUniverse: () => Promise<void> | void;
 }
 
 export const AnnualPlanView: React.FC<AnnualPlanViewProps> = ({
@@ -44,7 +44,9 @@ export const AnnualPlanView: React.FC<AnnualPlanViewProps> = ({
   const [statusFilter, setStatusFilter] = useState<string>('All');
   const [showNewModal, setShowNewModal] = useState<boolean>(false);
   const [showPlanDocModal, setShowPlanDocModal] = useState<boolean>(false);
-  const [bannerMessage, setBannerMessage] = useState<string | null>(null);
+  const [banner, setBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [modalError, setModalError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
 
   // New audit form state
   const [newTitle, setNewTitle] = useState('');
@@ -165,8 +167,9 @@ export const AnnualPlanView: React.FC<AnnualPlanViewProps> = ({
 
   const displayedEngagements = filteredEngagements;
 
-  const handleCreateAudit = (e: React.FormEvent) => {
+  const handleCreateAudit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setModalError(null);
     const selectedEntity = universe.find((entity) => entity.id === newEntityId);
     const startTime = Date.parse(`${newStart}T00:00:00Z`);
     const endTime = Date.parse(`${newEnd}T00:00:00Z`);
@@ -191,19 +194,29 @@ export const AnnualPlanView: React.FC<AnnualPlanViewProps> = ({
       !newAddresseeName.trim() ||
       !newAddresseeTitle.trim()
     ) {
-      setBannerMessage('Complete all required planning fields, select an Audit Universe entity, and use valid dates and budget hours.');
+      setModalError('Complete all required planning fields, select an Audit Universe entity, and use valid dates and budget hours.');
       return;
     }
+    const yearNum = Number(selectedYear);
+    const nextNum =
+      Math.max(
+        0,
+        ...engagements
+          .filter((eng) => eng.year === yearNum)
+          .map((eng) => {
+            const match = eng.ref.match(new RegExp(`^AE-${yearNum}-(\\d+)$`, 'i'));
+            return match ? Number(match[1]) : 0;
+          })
+      ) + 1;
     const score = newLikelihood * newImpact;
     const riskLevel = getAuditRiskLevel(score, newAuditDivisionId, auditDivisionRiskScales);
     const fieldworkWeeks = getAuditFieldworkWeeks(riskLevel, newAuditDivisionId, auditDivisionRiskScales);
-    const nextNum = engagements.length + 1;
-    const ref = formatYearIdentifier('AE', Number(selectedYear), nextNum);
+    const ref = formatYearIdentifier('AE', yearNum, nextNum);
 
     const created: AuditEngagement = {
       id: ref.toLowerCase(),
       ref,
-      year: Number(selectedYear),
+      year: yearNum,
       title: newTitle.trim(),
       category: newCategory,
       department: newCategory,
@@ -233,7 +246,7 @@ export const AnnualPlanView: React.FC<AnnualPlanViewProps> = ({
       fieldworkDayCurrent: 0,
       fieldworkDayTotal: fieldworkWeeks * 5,
       reportStatus: 'Draft',
-      reportRef: `IA-${selectedYear}-0${nextNum}-RPT`,
+      reportRef: `IA-${selectedYear}-${String(nextNum).padStart(3, '0')}-RPT`,
       executiveSummary: newObjectives.trim(),
       addedBy: getCurrentAccountEmail(),
       modifiedBy: getCurrentAccountEmail(),
@@ -252,23 +265,31 @@ export const AnnualPlanView: React.FC<AnnualPlanViewProps> = ({
       ],
     };
 
-    onAddEngagement(created);
-    setNewTitle('');
-    setNewEntityId('');
-    setNewAuditDivisionId('');
-    setNewHeadReviewer('');
-    setNewIndependentReviewer('Not needed');
-    setNewStart('');
-    setNewEnd('');
-    setNewObjectives('');
-    setNewScope('');
-    setNewCriteria('');
-    setNewAddresseeName('');
-    setNewAddresseeTitle('');
-    setNewCopyFurnished('');
-    setNewBudgetedHours('');
-    setShowNewModal(false);
-    setBannerMessage(`Added ${created.ref} (${created.title}) to Annual Plan ${selectedYear}.`);
+    setIsSaving(true);
+    try {
+      await onAddEngagement(created);
+      setNewTitle('');
+      setNewEntityId('');
+      setNewAuditDivisionId('');
+      setNewHeadReviewer('');
+      setNewIndependentReviewer('Not needed');
+      setNewStart('');
+      setNewEnd('');
+      setNewObjectives('');
+      setNewScope('');
+      setNewCriteria('');
+      setNewAddresseeName('');
+      setNewAddresseeTitle('');
+      setNewCopyFurnished('');
+      setNewBudgetedHours('');
+      setModalError(null);
+      setShowNewModal(false);
+      setBanner({ type: 'success', text: `Added ${created.ref} (${created.title}) to Annual Plan ${selectedYear}.` });
+    } catch (err) {
+      setModalError(err instanceof Error ? err.message : 'Unable to save engagement to SQL Connect.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -294,27 +315,48 @@ export const AnnualPlanView: React.FC<AnnualPlanViewProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => {
-              onAutoAssignLeads();
-              setBannerMessage('Auditors automatically balanced across planned engagements by specialization and risk tier.');
+            disabled={isSaving}
+            onClick={async () => {
+              setBanner(null);
+              setIsSaving(true);
+              try {
+                await onAutoAssignLeads();
+                setBanner({ type: 'success', text: 'Auditors automatically balanced across planned engagements by specialization and risk tier.' });
+              } catch (err) {
+                setBanner({ type: 'error', text: err instanceof Error ? err.message : 'Unable to save auto-assigned auditors.' });
+              } finally {
+                setIsSaving(false);
+              }
             }}
-            className="px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold rounded-md border border-slate-300 transition-colors cursor-pointer whitespace-nowrap"
+            className="px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold rounded-md border border-slate-300 transition-colors cursor-pointer whitespace-nowrap disabled:opacity-60"
           >
             Auto-assign auditors
           </button>
           <button
             type="button"
-            onClick={() => {
-              onDraftFromUniverse();
-              setBannerMessage('Drafted overdue high-risk entities from the Audit Universe into the Annual Plan.');
+            disabled={isSaving}
+            onClick={async () => {
+              setBanner(null);
+              setIsSaving(true);
+              try {
+                await onDraftFromUniverse();
+                setBanner({ type: 'success', text: 'Drafted overdue high-risk entities from the Audit Universe into the Annual Plan.' });
+              } catch (err) {
+                setBanner({ type: 'error', text: err instanceof Error ? err.message : 'Unable to draft engagements from Audit Universe.' });
+              } finally {
+                setIsSaving(false);
+              }
             }}
-            className="px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold rounded-md border border-slate-300 transition-colors cursor-pointer whitespace-nowrap"
+            className="px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-800 text-xs font-semibold rounded-md border border-slate-300 transition-colors cursor-pointer whitespace-nowrap disabled:opacity-60"
           >
             Draft from universe
           </button>
           <button
             type="button"
-            onClick={() => setShowNewModal(true)}
+            onClick={() => {
+              setModalError(null);
+              setShowNewModal(true);
+            }}
             className="px-4 py-2 bg-[#492785] hover:bg-[#3b1f6b] text-white text-xs font-semibold rounded-md transition-colors cursor-pointer whitespace-nowrap"
           >
             New audit
@@ -322,13 +364,22 @@ export const AnnualPlanView: React.FC<AnnualPlanViewProps> = ({
         </div>
       </div>
 
-      {bannerMessage && (
-        <div className="mt-4 px-3.5 py-2.5 bg-purple-50 border border-purple-200 rounded-md flex items-center justify-between text-xs text-purple-950">
-          <span>{bannerMessage}</span>
+      {banner && (
+        <div
+          role={banner.type === 'error' ? 'alert' : 'status'}
+          className={`mt-4 px-3.5 py-2.5 rounded-md flex items-center justify-between text-xs ${
+            banner.type === 'error'
+              ? 'bg-rose-50 border border-rose-300 text-rose-900 font-medium'
+              : 'bg-purple-50 border border-purple-200 text-purple-950'
+          }`}
+        >
+          <span>{banner.text}</span>
           <button
             type="button"
-            onClick={() => setBannerMessage(null)}
-            className="text-purple-700 hover:text-purple-950 font-semibold ml-4 cursor-pointer"
+            onClick={() => setBanner(null)}
+            className={`font-semibold ml-4 cursor-pointer ${
+              banner.type === 'error' ? 'text-rose-800 hover:text-rose-950' : 'text-purple-700 hover:text-purple-950'
+            }`}
           >
             Dismiss
           </button>
@@ -433,19 +484,23 @@ export const AnnualPlanView: React.FC<AnnualPlanViewProps> = ({
                       aria-label={`Audit division for ${eng.ref}`}
                       value={eng.auditDivisionId || ''}
                       onClick={(event) => event.stopPropagation()}
-                      onChange={(event) => {
+                      onChange={async (event) => {
                         event.stopPropagation();
                         const auditDivisionId = event.target.value || undefined;
                         const riskLevel = getAuditRiskLevel(eng.riskScore, auditDivisionId, auditDivisionRiskScales);
                         const fieldworkWeeks = getAuditFieldworkWeeks(riskLevel, auditDivisionId, auditDivisionRiskScales);
-                        onUpdateEngagement({
-                          ...eng,
-                          auditDivisionId,
-                          riskLevel,
-                          fieldworkDayTotal: fieldworkWeeks * 5,
-                          modifiedBy: getCurrentAccountEmail(),
-                          modifiedAt: new Date().toISOString(),
-                        });
+                        try {
+                          await onUpdateEngagement({
+                            ...eng,
+                            auditDivisionId,
+                            riskLevel,
+                            fieldworkDayTotal: fieldworkWeeks * 5,
+                            modifiedBy: getCurrentAccountEmail(),
+                            modifiedAt: new Date().toISOString(),
+                          });
+                        } catch (err) {
+                          setBanner({ type: 'error', text: err instanceof Error ? err.message : 'Unable to update audit division.' });
+                        }
                       }}
                       className="max-w-52 px-2 py-1 bg-white border border-slate-300 rounded text-[11px] text-slate-700"
                     >
@@ -468,7 +523,13 @@ export const AnnualPlanView: React.FC<AnnualPlanViewProps> = ({
                       <select
                         aria-label={`Audit status for ${eng.ref}`}
                         value={eng.status}
-                        onChange={(event) => onUpdateEngagementStatus(eng.id, event.target.value)}
+                        onChange={async (event) => {
+                          try {
+                            await onUpdateEngagementStatus(eng.id, event.target.value);
+                          } catch (err) {
+                            setBanner({ type: 'error', text: err instanceof Error ? err.message : 'Unable to update engagement status.' });
+                          }
+                        }}
                         className="max-w-40 px-2 py-1 bg-white border border-slate-300 rounded text-[11px] text-slate-700"
                       >
                         {[...new Set([...auditStatuses, eng.status])].map((status) => (
@@ -535,6 +596,11 @@ export const AnnualPlanView: React.FC<AnnualPlanViewProps> = ({
             <p className="text-xs text-slate-500 mt-0.5">
               Adds a new risk-scored audit engagement to Annual Plan {selectedYear} (Stage 01).
             </p>
+            {modalError && (
+              <div role="alert" className="mt-3 px-3 py-2 bg-rose-50 border border-rose-300 rounded-md text-xs text-rose-900 font-medium">
+                {modalError}
+              </div>
+            )}
             <form onSubmit={handleCreateAudit} className="mt-4 space-y-3 text-xs">
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">
@@ -801,16 +867,21 @@ export const AnnualPlanView: React.FC<AnnualPlanViewProps> = ({
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
                 <button
                   type="button"
-                  onClick={() => setShowNewModal(false)}
-                  className="px-3.5 py-1.5 border border-slate-300 rounded-md font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                  disabled={isSaving}
+                  onClick={() => {
+                    setModalError(null);
+                    setShowNewModal(false);
+                  }}
+                  className="px-3.5 py-1.5 border border-slate-300 rounded-md font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer disabled:opacity-60"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 bg-[#5A626A] hover:bg-slate-700 text-white rounded-md font-semibold cursor-pointer"
+                  disabled={isSaving}
+                  className="px-4 py-1.5 bg-[#5A626A] hover:bg-slate-700 text-white rounded-md font-semibold cursor-pointer disabled:opacity-60"
                 >
-                  Create engagement
+                  {isSaving ? 'Saving…' : 'Create engagement'}
                 </button>
               </div>
             </form>
